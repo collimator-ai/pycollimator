@@ -1,0 +1,37 @@
+name: Build and Publish Docs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-publish-docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install '.[dev]'
+
+      - name: Build and Generate Docs
+        run: |
+          mkdocs build --clean -d site
+          chmod -c -R +rX "site/" | while read line; do
+            echo "::warning title=Invalid file permissions automatically fixed::$line"
+          done
+          cd site
+          tar -czf site.tar.gz .
+
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          name: github-pages
+          path: site/site.tar.gz
