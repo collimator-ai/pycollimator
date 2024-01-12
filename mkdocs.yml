@@ -1,0 +1,16 @@
+site_name: pycollimator
+
+theme:
+  name: material
+  # name: readthedocs
+  # name: mkdocs
+  palette:
+    # teal primary can't be used with the teal icon...
+    primary: indigo
+    accent: teal
+  logo: img/icon-192.png
+  favicon: img/favicon.ico
+
+plugins:
+  - search
+  - mkdocstrings

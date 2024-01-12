@@ -316,24 +316,25 @@ def _run_simulation_common(
 
 
 def run_simulation(
-    model,
+    model: Union[Model, str],
     parameters: dict = None,
     wait=True,
     no_sync=False,
     ignore_cache=False,
-    snapshot_uuid=None,
-    recorded_signals: list = None,
+    snapshot_uuid:str=None,
+    recorded_signals: list[str] = None,
 ) -> Simulation:
     """
-    Run a simulation on the given model.
+    Run a simulation remotely on the given model.
 
-    :param model: Model or model UUID
-    :param parameters: Simulation parameters
-    :param wait: Wait for the simulation to complete
-    :param no_sync: Do not sync the model before running the simulation
-    :param ignore_cache: Ignore the cache and run the simulation from scratch
-    :param snapshot_uuid: Use a snapshot of the model
-    :param recorded_signals: List of signals to record (Block or signal id)
+    Args:
+        model: Model or model UUID
+        parameters: Simulation parameters
+        wait: Wait for the simulation to complete
+        no_sync: Do not sync the model before running the simulation
+        ignore_cache: Ignore the cache and run the simulation from scratch
+        snapshot_uuid: Use a snapshot of the model
+        recorded_signals: List of signals to record (Block or signal id)
     """
     return _run_simulation_common(
         model,
