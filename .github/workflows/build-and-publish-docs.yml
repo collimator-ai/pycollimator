@@ -33,19 +33,19 @@ jobs:
           pip install --upgrade pip
           pip install '.[dev]'
 
-      - name: Build and Generate Docs
+      - name: Build Docs
+        run: mkdocs build --clean -d site
+
+      - name: Fix Permissions
         run: |
-          mkdocs build --clean -d site
           chmod -c -R +rX "site/" | while read line; do
             echo "::warning title=Invalid file permissions automatically fixed::$line"
           done
-          # tar -czf site.tar.gz site
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          name: github-pages
-          path: site
+          path: ./site
 
   deploy-docs:
     needs: build-and-upload-docs
