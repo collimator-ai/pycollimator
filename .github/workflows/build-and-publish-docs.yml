@@ -25,10 +25,15 @@ jobs:
 
       - name: Build and Generate Docs
         run: |
-          mkdocs build --clean
+          mkdocs build --clean -d site
+          chmod -c -R +rX "site/" | while read line; do
+            echo "::warning title=Invalid file permissions automatically fixed::$line"
+          done
+          cd site
+          tar -czf site.tar.gz .
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          name: pages
-          path: path/to/docs/folder
+          name: github-pages
+          path: site/site.tar.gz
