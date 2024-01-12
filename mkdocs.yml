@@ -1,8 +1,8 @@
 site_name: pycollimator
 
 theme:
-  name: material
-  # name: readthedocs
+  # name: material
+  name: readthedocs
   # name: mkdocs
   palette:
     # teal primary can't be used with the teal icon...
@@ -14,3 +14,10 @@ theme:
 plugins:
   - search
   - mkdocstrings
+
+nav:
+  - index.md
+  - API Reference:
+      - pycollimator.md
+      - wildcat.md
+  - about.md
