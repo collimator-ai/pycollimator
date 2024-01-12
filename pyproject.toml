@@ -1,0 +1,31 @@
+[build-system]
+# Might also need "setuptools_scm[toml]>=6.2" for version tagging?
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pycollimator"
+dynamic = ["version"]
+authors = [{ name = "Collimator.ai" }]
+description = "API client for collimator.ai cloud-native simulation platform"
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+]
+dependencies = ["numpy", "pandas", "control", "simpleeval", "requests"]
+
+[tool.setuptools]
+packages = ["pycollimator"]
+
+[project.optional-dependencies]
+dev = ["black", "flake8", "pytest", "pytest-xdist", "pylint"]
+
+[tool.black]
+line-length = 88
+
+# [tool.setuptools_scm]
+# root = "."
+# local_scheme = "no-local-version"
+# version_scheme = "post-release"
