@@ -27,10 +27,10 @@ jobs:
           chmod -c -R +rX "site/" | while read line; do
             echo "::warning title=Invalid file permissions automatically fixed::$line"
           done
-          tar -czf site.tar.gz site
+          # tar -czf site.tar.gz site
 
       - name: Upload Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
           name: github-pages
-          path: site.tar.gz
+          path: site
