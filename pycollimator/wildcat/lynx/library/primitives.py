@@ -408,16 +408,16 @@ class DiscreteClock(LeafSystem):
     before updating to `x⁺[n] = t[n]`.  Graphically, a discrete clock sampled at
     100 Hz would have the following time series:
 
-      x(t)                  ●━
-        |                   ┆
-    .03 |              ●━━━━○
-        |              ┆
-    .02 |         ●━━━━○
-        |         ┆
-    .01 |    ●━━━━○
-        |    ┆
-      0 ●━━━━○----+----+----+-- t
-        0   .01  .02  .03  .04
+          x(t)                  ●━
+            |                   ┆
+        .03 |              ●━━━━○
+            |              ┆
+        .02 |         ●━━━━○
+            |         ┆
+        .01 |    ●━━━━○
+            |    ┆
+          0 ●━━━━○----+----+----+-- t
+            0   .01  .02  .03  .04
 
     The recorded states are the open circles, which should be interpreted as the value
     seen by all other blocks on the interval `(t[n-1], t[n])`. The results of recording

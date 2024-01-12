@@ -28,6 +28,10 @@ nav:
   - API Reference:
       - pycollimator.md
       - wildcat:
-          - wildcat/intro.md
-          - wildcat/library.md
+        - wildcat/intro.md
+        - wildcat/framework.md
+        - wildcat/simulation.md
+        - wildcat/library.md
+        - wildcat/math_backend.md
+        - wildcat/optimization.md
   - about.md

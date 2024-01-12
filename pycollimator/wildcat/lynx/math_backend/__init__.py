@@ -1,3 +1,5 @@
+"""Switchable math backends for wilcat."""
+
 from .backend import (
     math_backend,
     dtype,
