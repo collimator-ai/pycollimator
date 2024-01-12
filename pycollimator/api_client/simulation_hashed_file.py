@@ -4,10 +4,10 @@ import tempfile
 import os
 
 
-from pycollimator.api import Api
-from pycollimator.error import CollimatorUnexpectedError
-from pycollimator.hash import Hash
-from pycollimator.log import Log
+from .api import Api
+from .error import CollimatorUnexpectedError
+from .hash import Hash
+from .log import Log
 
 
 class SimulationHashedFile:

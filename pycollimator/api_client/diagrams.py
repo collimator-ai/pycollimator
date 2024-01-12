@@ -3,8 +3,8 @@ import re
 import pandas as pd
 from typing import List, Optional
 
-from pycollimator.error import NotFoundError
-from pycollimator.log import Log
+from .error import NotFoundError
+from .log import Log
 
 
 # Current structure of SimulationModel:

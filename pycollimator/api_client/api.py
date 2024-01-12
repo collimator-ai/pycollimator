@@ -3,13 +3,13 @@ import os
 import typing as T
 import requests
 
-from pycollimator.log import Log
-from pycollimator.error import (
+from .log import Log
+from .error import (
     CollimatorAuthenticationError,
     CollimatorApiError,
     CollimatorRetryableApiError,
 )
-from pycollimator.global_variables import GlobalVariables
+from .global_variables import GlobalVariables
 
 
 class Api:

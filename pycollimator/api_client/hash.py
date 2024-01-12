@@ -1,5 +1,5 @@
 import hashlib
-from pycollimator.log import Log
+from .log import Log
 
 
 class Hash:

@@ -4,10 +4,10 @@ import control
 import numpy as np
 import pandas as pd
 
-from pycollimator.error import NotFoundError
-from pycollimator.models import Model
-from pycollimator.utils import is_path
-from pycollimator.diagrams import Block
+from .error import NotFoundError
+from .models import Model
+from .utils import is_path
+from .diagrams import Block
 
 
 class SimulationResults:

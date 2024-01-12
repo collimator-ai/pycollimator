@@ -1,7 +1,7 @@
-from pycollimator.api import Api
-from pycollimator.error import NotFoundError
-from pycollimator.log import Log
-from pycollimator.utils import is_uuid
+from .api import Api
+from .error import NotFoundError
+from .log import Log
+from .utils import is_uuid
 
 
 class Project:

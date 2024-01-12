@@ -8,14 +8,14 @@ import typing as T
 
 from simpleeval import EvalWithCompoundTypes
 
-from pycollimator.api import Api
-from pycollimator.diagrams import ModelGraph, BlockPath
-from pycollimator.error import NotFoundError, NotLoadedError
-from pycollimator.global_variables import GlobalVariables
-from pycollimator.log import Log
-from pycollimator.projects import get_project
-from pycollimator.simulation_hashed_file import SimulationHashedFile
-from pycollimator.utils import is_path, is_uuid
+from .api import Api
+from .diagrams import ModelGraph, BlockPath
+from .error import NotFoundError, NotLoadedError
+from .global_variables import GlobalVariables
+from .log import Log
+from .projects import get_project
+from .simulation_hashed_file import SimulationHashedFile
+from .utils import is_path, is_uuid
 
 # from collimator.simulations import run_simulation
 

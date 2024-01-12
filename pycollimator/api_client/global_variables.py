@@ -1,8 +1,8 @@
 import typing as T
 from uuid import uuid4
 
-from pycollimator.log import Log
-from pycollimator.utils import is_pyodide
+from .log import Log
+from .utils import is_pyodide
 
 
 class GlobalVariables:

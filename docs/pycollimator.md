@@ -1,10 +1,6 @@
-# pycollimator
+# api_client
 
-`pycollimator` is an API client to remotely run simulations in the Collimator
-cloud native environment.
+`pycollimator.api_client` is an API client to remotely run simulations
+in the Collimator cloud native environment.
 
-## Simulations
-
-### run_simulation
-
-::: pycollimator.simulations.run_simulation
+### ::: pycollimator.api_client.simulations

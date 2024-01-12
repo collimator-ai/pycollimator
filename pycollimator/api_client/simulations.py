@@ -146,14 +146,20 @@ class Simulation:
     def get_results(
         self, signals: Union[List[str], str] = None, wait=True
     ) -> SimulationResults:
+        # :param signals: List of signal paths to fetch results of or a single signal path, defaults to None (all signals)
+        # :type signals: List[str] | str, optional
+        # :param wait: Whether or not to wait for the simulation to complete, defaults to True
+        # :type wait: bool, optional
+        # :return: Simulation results of specified signal, or all results if none specified.
+        # :rtype: SimulationResults
         """Get simulation results.
 
-        :param signals: List of signal paths to fetch results of or a single signal path, defaults to None (all signals)
-        :type signals: List[str] | str, optional
-        :param wait: Whether or not to wait for the simulation to complete, defaults to True
-        :type wait: bool, optional
-        :return: Simulation results of specified signal, or all results if none specified.
-        :rtype: SimulationResults
+        Args:
+            signals: List of signal paths to fetch results of or a single signal path, defaults to None (all signals)
+            wait: Whether or not to wait for the simulation to complete, defaults to True
+
+        Returns:
+            Simulation results of specified signal, or all results if none specified.
         """
         if wait:
             self.wait()

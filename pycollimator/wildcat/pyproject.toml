@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools >= 65", "wheel >= 0.38", "cmake"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lynx"
+version = "0.0.0"
+description = "Lynx aka Wildcat aka Bobcat"
+requires-python = ">=3.11"
+authors = [{ name = "Collimator", email = "support@collimator.ai" }]
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.in"] }
+
+[project.scripts]
+lynx_cli = "lynx.cli.lynx_cli:lynx_cli"
