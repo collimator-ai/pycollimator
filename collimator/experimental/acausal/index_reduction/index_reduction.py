@@ -10,16 +10,20 @@
 # Affero General Public License along with this program. If not, see
 # <https://www.gnu.org/licenses/>.
 
+from dataclasses import dataclass
 import itertools
 import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 from ..types import DiagramProcessingData, IndexReductionInputs
 from ..error import AcausalModelError
+import jax
 from collimator.backend.typing import ArrayLike
 from collimator.lazy_loader import LazyLoader
+from collimator.backend import numpy_api as cnp
+from collimator.backend.typing import Array
 
 from .equation_utils import (
-    compute_consistent_initial_conditions,
+    compute_initial_conditions,
     extract_vars,
     order_vars_by_impact,
     process_equations,
@@ -42,6 +46,58 @@ else:
     bipartite = LazyLoader("bipartite", globals(), "networkx.algorithms.bipartite")
 
 
+@dataclass
+class SemiExplicitDAE:
+    """
+    Dataclass to store the semi-explicit form of the DAE system obtained after
+    index reduction and *dummy derivatives* substitution.
+
+    ```
+    ẋ = f(t,x,y,θ)
+    g(t,x,y,θ)=0
+    ```
+
+    It also stores:
+    1. the mapping `dae_X_to_X_mapping` that maps the variables `x, ẋ, y` (dae_X) in the
+    above equations, which may be dummy derivatives, to the corresponding original
+    variables `X`.
+    2. the variables `eqs, X, ics, ics_weak` that need to be solved for the
+    computation of consistent initial conditions. This is needed because the IC
+    computation needs to happen during Acausal system creation to enable changing of
+    parameters (knowns `θ`).
+    3. Variables to indicate whether variables are scaled; scaling factors if
+    scaling is done; and a substitution mapping for ZCs and output expressions
+    """
+
+    # variables for semi-explicit DAE system
+    t: sp.Symbol
+    x: list
+    x_dot: list  # ẋ
+    y: list
+    f: list
+    g: list
+    knowns: dict  # θ
+    n_ode: int
+    n_alg: int
+
+    # map from dummy derivative variables to original variables
+    dae_X_to_X_mapping: dict
+
+    # variables for consistent initialization
+    eqs: list
+    X: list
+    ics: dict
+    ics_weak: dict
+
+    # bool to indicated whether variables have been scaled
+    # the state variables are s = [x,y]
+    # s_scaled[i] = s[i]/Ss[i]
+    is_scaled: bool
+    Ss: Array  # the array of scaling factors
+    vars_to_scaled_vars: dict
+    scaled_vars_to_vars: dict
+
+
 class IndexReduction:
     """
     Class to perform index reduction of a DAE system using the Pantelides algorithm
@@ -53,6 +109,10 @@ class IndexReduction:
     Mattsson, S.E. and Söderlind, G., 1993. Index reduction in differential-algebraic
     equations using dummy derivatives. SIAM Journal on Scientific Computing, 14(3).
 
+    Objects of this call can be initialized either by providing the necessary parameters
+    `t, eqs, knowns, ics, ics_weak` directly or by passing an object `ir_inputs_from_dp`
+    obtained from diagram processing steps.
+
     Parameters:
         t : sympy.Symbol
             The independent variable representing time.
@@ -63,20 +123,31 @@ class IndexReduction:
             Dictionary of known variables in the DAE system. The keys are the known
             sympy variables and the values are their corresponding numeric values.
         ics : dict
-            Dictionary of initial conditions for the DAE system. The keys are the
+            Dictionary of (strong) initial conditions for the DAE system. The keys are
+            the sympy variables and the values are the numerical initial values.
+        ics_weak : dict
+            Dictionary of weak initial conditions for the DAE system. The keys are the
             sympy variables and the values are the numerical initial values.
+        ir_inputs_from_dp : IndexReductionInputs
+            NamedTuple containing the inputs for index reduction obtained from
+            DiagramProcessing.
+        dpd: DiagramProcessingData
+            NamedTuple containing the data obtained from DiagramProcessing. This is
+            used to propagate errors upstream when `ir_inputs_from_dp` is used.
+        verbose : bool
+            Flag to print the intermediate steps of the index reduction pipeline.
     """
 
     def __init__(
         self,
-        t=None,
-        eqs=None,
-        knowns=None,
-        ics=None,  # is this really optional?
-        ics_weak=None,
-        ir_inputs_from_dp: IndexReductionInputs = None,
-        dpd: DiagramProcessingData = None,
-        verbose=False,
+        t: Optional[sp.Symbol] = None,
+        eqs: Optional[list[sp.Expr]] = None,
+        knowns: Optional[dict[sp.Expr, float]] = None,
+        ics: Optional[dict[sp.Expr, float]] = None,
+        ics_weak: Optional[dict[sp.Expr, float]] = None,
+        ir_inputs_from_dp: Optional[IndexReductionInputs] = None,
+        dpd: Optional[DiagramProcessingData] = None,
+        verbose: bool = False,
     ):
         self.verbose = verbose
         self.index_reduction_done = False
@@ -92,15 +163,17 @@ class IndexReduction:
                 self.X,
                 self.eqs,
                 self.vars_in_eqs,
-                self.eqs_idx,
+                self.eqs_idx_dict,
                 self.knowns,
                 self.known_vars,
                 self.ics,
                 self.ics_weak,
             ) = ir_inputs_from_dp
+            self.eqs_idx_dp = list(self.eqs_idx_dict.values())
         else:
             self.t = t
             self.eqs = eqs
+            self.eqs_idx_dp = list(range(len(eqs)))
             self.knowns = knowns
             self.known_vars = set(knowns.keys())
             self.ics = {} if ics is None else ics
@@ -136,7 +209,7 @@ class IndexReduction:
                 variables=ics_with_invalid_types.keys(),
             )
 
-    def __call__(self):
+    def __call__(self, scale: bool = False):
         self.check_system()
         self.prepare_pantelides_system()
         self.pre_pantelides_structural_singularity_check()
@@ -148,6 +221,61 @@ class IndexReduction:
         self.index_reduction_done = True
         self.convert_to_semi_explicit()
 
+        if scale:
+            X_ic_mapping = compute_initial_conditions(
+                self.t,
+                self.eqs,
+                self.X,
+                self.ics,
+                self.ics_weak,
+                self.knowns,
+                verbose=self.verbose,
+            )
+            self.scale_se_equations(X_nom_mapping={}, X_ic_mapping=X_ic_mapping)
+            sed = SemiExplicitDAE(
+                self.t,
+                self.ses_x,
+                self.ses_x_dot,
+                self.ses_y,
+                self.ses_f,
+                self.ses_g,
+                self.knowns,
+                len(self.ses_x),
+                len(self.ses_y),
+                self.ses_dae_X_to_X_mapping,
+                self.eqs,
+                self.X,
+                self.ics,
+                self.ics_weak,
+                is_scaled=True,
+                Ss=self.Ss,
+                vars_to_scaled_vars=self.ses_vars_to_scaled_vars,
+                scaled_vars_to_vars=self.ses_scaled_vars_to_vars,
+            )
+        else:
+            sed = SemiExplicitDAE(
+                self.t,
+                self.se_x,
+                self.se_x_dot,
+                self.se_y,
+                self.se_x_dot_rhs,
+                self.se_alg_eqs,
+                self.knowns,
+                len(self.se_x),
+                len(self.se_y),
+                self.se_dae_X_to_X_mapping,
+                self.eqs,
+                self.X,
+                self.ics,
+                self.ics_weak,
+                is_scaled=False,
+                Ss=cnp.ones(len(self.se_x) + len(self.se_y)),
+                vars_to_scaled_vars={},
+                scaled_vars_to_vars={},
+            )
+
+        return sed
+
     def run_dev(self, config=None):
         """
         Only for development. Should not be called in production.
@@ -158,7 +286,17 @@ class IndexReduction:
         self.pantelides()
         self.find_free_variables_for_consistent_initialization()
         self.initial_condition_check_and_tweaks()
-        self.compute_initial_conditions(config)
+        self.X_ic_mapping = compute_initial_conditions(
+            self.t,
+            self.eqs,
+            self.X,
+            self.ics,
+            self.ics_weak,
+            self.knowns,
+            config=config,
+            verbose=self.verbose,
+        )
+        self.ic_computed = True
         self.make_BLT_graph()
         self.dummy_derivatives()
 
@@ -174,13 +312,38 @@ class IndexReduction:
         self.n = len(self.x)
         self.m = len(self.y)
 
-        self.N = self.n + self.m  # number of equations
-        self.M = 2 * self.n + self.m  # number of variables
+        self.N = self.n + self.m  # number of equations {x_dot, y}
+        self.M = 2 * self.n + self.m  # number of variables (x, x_dot, y)
 
         if self.N != len(self.eqs):
-            # raise ValueError(
-            #     "Mismatch between the number of equations and the number of variables."
-            # )
+            # Print system info before raising error
+            print("##### Input system Information #####", "\n")
+            print(f"Number of equations: {len(self.eqs)}")
+            print(f"Number of differential variables: {self.n}")
+            print(f"Number of algebraic variables: {self.m}")
+
+            print("\n")
+            for idx, eq in enumerate(self.eqs):
+                print(f"Equation {idx} ({self.eqs_idx_dp[idx]}): {eq}")
+            print("\n")
+            for idx, x in enumerate(self.X):
+                print(f"Variable {idx}: {x}")
+            print("\n")
+
+            print("Knowns:")
+            for k, v in self.knowns.items():
+                print(f"{k} = {v}")
+            print("\n")
+
+            print("Strong ICs provided for:")
+            for k, v in self.ics.items():
+                print(f"{k} = {v}")
+            print("\n")
+            print("Weak ICs provided for:")
+            for k, v in self.ics_weak.items():
+                print(f"{k} = {v}")
+            print("\n")
+
             message = f"Mismatch between the number of equations {len(self.eqs)} and the number of variables {self.N}."
             raise AcausalModelError(message=message, dpd=self.dpd)
 
@@ -192,7 +355,7 @@ class IndexReduction:
             print(f"Number of algebraic variables: {self.m}")
             print("\n")
             for idx, eq in enumerate(self.eqs):
-                print(f"Equation {idx}: {eq}")
+                print(f"Equation {idx} ({self.eqs_idx_dp[idx]}): {eq}")
             print("\n")
             for idx, x in enumerate(self.X):
                 print(f"Variable {idx}: {x}")
@@ -395,6 +558,9 @@ class IndexReduction:
 
                         self.B[e_node] = self.N - 1
 
+                        # add to dp eq index
+                        self.eqs_idx_dp.append(-new_eq_node)
+
                     # (iii)
                     for v_node in colored_v_nodes:
                         j = self.v_mapping[v_node]
@@ -456,17 +622,21 @@ class IndexReduction:
             print("\n")
             print("# Equations", "\n")
             for idx, eq in enumerate(self.eqs):
-                print(f"Equation {idx}: {eq}")
+                print(f"Equation {idx} ({self.eqs_idx_dp[idx]}): {eq}")
 
             print("\n")
             print("# Variable assignments")
             for k, v in assignment_dict.items():
-                print(f"Variable {k} is assigned to -> e{v}")
+                print(
+                    f"Variable {k} is assigned to -> e{v} ({self.eqs_idx_dp[v] if v else ''})"
+                )
 
             print("\n")
             print("# Differentiated equations")
             for k, v in eq_differentiation_dict.items():
-                print(f"Differentiate e{k} to get  -> e{v}")
+                print(
+                    f"Differentiate e{k} ({self.eqs_idx_dp[k]}) to get  -> e{v} ({self.eqs_idx_dp[v] if v else ''})"
+                )
 
             print("\n")
             print("# Derivatives present in the variable association list")
@@ -478,7 +648,9 @@ class IndexReduction:
 
             print("# Equations in the index-1 DAE system", "\n")
             for eq_idx in self.pantelides_dae_eqs:
-                print(f"Equation {eq_idx}: {self.eqs[eq_idx]}")
+                print(
+                    f"Equation {eq_idx} ({self.eqs_idx_dp[eq_idx]}): {self.eqs[eq_idx]}"
+                )
 
             print("\n")
             print("Variables in the index-1 DAE system", "\n")
@@ -650,10 +822,10 @@ class IndexReduction:
                 " feasible system could not be found. Aborting!"
             )
         if not numerically_feasible_set_found:
-            raise ValueError(
+            warnings.warn(
                 "A combination of initial conditions leading to a structurally "
                 "feasible system was found, but a numerically feasible solution "
-                "could not be found. Aborting!"
+                "could not be found."
             )
         # if not found_solution:
         #     warnings.warn(
@@ -748,10 +920,10 @@ class IndexReduction:
                     " feasible system could not be found. Aborting!"
                 )
             if not numerically_feasible_set_found:
-                raise ValueError(
+                warnings.warn(
                     "A combination of initial conditions leading to a structurally "
                     "feasible system was found, but a numerically feasible solution "
-                    "could not be found. Aborting!"
+                    "could not be found"
                 )
 
         condition_number = compute_condition_number(
@@ -810,10 +982,10 @@ class IndexReduction:
             )
 
         if sorted(condition_numbers)[0] > self.condition_number_threshold:
-            raise ValueError(
+            warnings.warn(
                 "A combination of initial conditions leading to a structurally "
                 "feasible system was found, but a numerically feasible solution "
-                "could not be found. Aborting!"
+                "could not be found."
             )
 
         # sort based on condition numbers
@@ -904,36 +1076,6 @@ class IndexReduction:
             print(f"{k} = {v}")
         print("\n")
 
-    def compute_initial_conditions(self, config=None):
-        """
-        Compute the initial conditions for the system of equations obtained after the
-        Pantelides algorithm.
-        """
-        if self.verbose:
-            print(
-                "\n" "Proceeding with numerical computation of ICs.",
-            )
-
-        self.X_ic = compute_consistent_initial_conditions(
-            self.t,
-            self.eqs,
-            self.X,
-            self.ics,
-            self.ics_weak,
-            self.knowns,
-            config=config,
-        )
-
-        self.X_ic_mapping = {var: ic for var, ic in zip(self.X, self.X_ic)}
-
-        self.ic_computed = True
-
-        if self.verbose:
-            print("\n")
-            print("##### Initial conditions #####", "\n")
-            for var, var_ic in self.X_ic_mapping.items():
-                print(f"{var} = {var_ic}")
-
     def make_BLT_graph(self):
         """
         For the atmost index-1 system produced by Pantelides algorith, create a
@@ -978,7 +1120,12 @@ class IndexReduction:
             print("##### Block Lower Triangular (BLT) ordering #####", "\n")
 
             print("BLT equation ordering")
-            print([[f"e{idx}" for idx in block] for block in self.eBLT])
+            print(
+                [
+                    [f"e{idx} ({self.eqs_idx_dp[idx]})" for idx in block]
+                    for block in self.eBLT
+                ]
+            )
 
             print("BLT variable ordering")
             print(
@@ -1264,6 +1411,8 @@ class IndexReduction:
         self.se_alg_eqs = alg_eqs.copy()
         self.se_alg_eqs.extend(diff_eqs_post_substitution)
 
+        self.se_dae_X_to_X_mapping = self.dae_X_to_X_mapping.copy()
+
         if self.ic_computed:
             self.se_x_ic = [
                 self.X_ic_mapping[self.dae_X_to_X_mapping[var]] for var in self.se_x
@@ -1323,3 +1472,187 @@ class IndexReduction:
                     print(f"{str(var)}")
 
                 print("\n", "#" * 60, "\n")
+
+    def scale_se_equations(self, X_nom_mapping={}, X_ic_mapping={}):
+        self.se_x_ic = [
+            X_ic_mapping[self.se_dae_X_to_X_mapping[var]] for var in self.se_x
+        ]
+        self.se_x_dot_ic = [
+            X_ic_mapping[self.se_dae_X_to_X_mapping[var]] for var in self.se_x_dot
+        ]
+        self.se_y_ic = [
+            X_ic_mapping[self.se_dae_X_to_X_mapping[var]] for var in self.se_y
+        ]
+
+        n_ode = len(self.se_x)
+        n_alg = len(self.se_y)
+
+        knowns_symbols, knowns_vals = zip(*self.knowns.items())
+
+        s = self.se_x + self.se_y
+        sdot = self.se_x_dot + [sp.Derivative(var, self.t) for var in self.se_y]
+
+        # convert semi-explicit form to implicit representation F(x, x_dot, y, t) = 0
+        # for jacobian computation.
+        sym_F = [
+            xdot - fx for xdot, fx in zip(self.se_x_dot, self.se_x_dot_rhs)
+        ] + self.se_alg_eqs
+
+        lambda_args = (self.t, s, sdot, knowns_symbols)
+
+        # ics
+        s0 = self.se_x_ic + self.se_y_ic
+        sdot0 = self.se_x_dot_ic + [0.0] * n_alg
+        s0_map = {var: ic for var, ic in zip(s, s0)}
+        sdot0_map = {var: ic for var, ic in zip(sdot, sdot0)}
+
+        # provided nominal values
+        X_nom_map = {
+            self.se_dae_X_to_X_mapping[var]: ic for var, ic in X_nom_mapping.items()
+        }
+
+        s_nom = [
+            X_nom_map[var] if var in X_nom_map.keys() else s0_map[var] for var in s
+        ]
+        sdot_nom = [
+            X_nom_map[var] if var in X_nom_map.keys() else sdot0_map[var]
+            for var in sdot
+        ]
+
+        use_jacobian_scaling = False
+        if use_jacobian_scaling:
+            # Evaluate the Jacobians at nominal values
+            t_nom = 0.0
+            # TODO: Symbolic computation of Jacobian fails at the lambidification stage
+            # fails when functions such as `Piecewise` and `Abs` are used. We need to
+            # look at all the places where Jacobians are symbolically computed and then
+            # (i) either make the symbolic computation robust; or (ii) use numerical
+            # computation everywhere possible.
+            compute_jacobians_symbolically = False
+            if compute_jacobians_symbolically:
+                sym_dF_ds = sp.Matrix(sym_F).jacobian(s)
+                sym_dF_dsdot = sp.Matrix(sym_F).jacobian(sdot)
+
+                dF_ds = sp.lambdify(
+                    lambda_args,
+                    sym_dF_ds,
+                    modules=["jax", {"cnp": cnp}],
+                )
+
+                dF_dsdot = sp.lambdify(
+                    lambda_args,
+                    sym_dF_dsdot,
+                    modules=["jax", {"cnp": cnp}],
+                )
+                J_s = dF_ds(t_nom, s_nom, sdot_nom, knowns_vals)
+                J_sdot = dF_dsdot(t_nom, s_nom, sdot_nom, knowns_vals)
+            else:
+                F = sp.lambdify(
+                    lambda_args,
+                    sym_F,
+                    modules=["jax", {"cnp": cnp}],
+                )
+                J_s = jax.jacfwd(F, argnums=1)(t_nom, s_nom, sdot_nom, knowns_vals)
+                J_sdot = jax.jacfwd(F, argnums=2)(t_nom, s_nom, sdot_nom, knowns_vals)
+
+            # Scaling for the variables x_scaled = x / Ss
+            Ss = 1.0 / cnp.max(cnp.abs(cnp.vstack((J_s, J_sdot))), axis=0)
+            Ss = cnp.ones(len(s))
+
+            # Scaling for equations eq_scaled = eq / Se
+            Se = 1.0 / cnp.max(cnp.abs(cnp.hstack((J_s, J_sdot))), axis=1)
+            # Se = cnp.ones(len(sym_F))
+        else:
+            EPS = 1e-06
+            Ss = cnp.array(
+                [
+                    cnp.abs(var_nom) if cnp.abs(var_nom) >= EPS else 1.0
+                    for var_nom in s_nom
+                ]
+            )
+            Se = cnp.ones(len(sym_F))
+
+        var_to_scaled_var = {var: sp.Function(f"scaled_{var}")(self.t) for var in s}
+
+        # scaled variables
+        self.ses_x = [var_to_scaled_var[var] for var in self.se_x]
+        self.ses_x_dot = [sp.diff(var, self.t) for var in self.ses_x]
+        self.ses_y = [var_to_scaled_var[var] for var in self.se_y]
+
+        # Initial condition scaling
+        self.ses_x_ic = [val / Ss[idx] for idx, val in enumerate(self.se_x_ic)]
+        self.ses_x_dot_ic = [val / Ss[idx] for idx, val in enumerate(self.se_x_dot_ic)]
+        self.ses_y_ic = [val / Ss[idx + n_ode] for idx, val in enumerate(self.se_y_ic)]
+
+        # equations with scaled variables
+        subs_var_to_scaled_var = {
+            var: sp.Function(f"scaled_{var}")(self.t) * scale
+            for var, scale in zip(s, Ss)
+        }
+        self.ses_f = [
+            expr.subs(subs_var_to_scaled_var) / Ss[idx]
+            for idx, expr in enumerate(self.se_x_dot_rhs)
+        ]
+        self.ses_g = [expr.subs(subs_var_to_scaled_var) for expr in self.se_alg_eqs]
+
+        # scale equations
+        self.ses_g = [expr * Se[idx + n_ode] for idx, expr in enumerate(self.ses_g)]
+
+        self.Ss = Ss
+
+        all_vars_to_scaled_vars = {
+            der: scaled_der for der, scaled_der in zip(self.se_x_dot, self.ses_x_dot)
+        }
+        all_vars_to_scaled_vars.update(var_to_scaled_var)
+
+        self.ses_dae_X_to_X_mapping = {
+            all_vars_to_scaled_vars[dae_var]: var
+            for dae_var, var in self.se_dae_X_to_X_mapping.items()
+        }
+
+        # Create a single dict to be used for substitutions in ZC and output expressions
+        self.ses_vars_to_scaled_vars = {
+            der: scaled_der * Ss[idx]
+            for idx, (der, scaled_der) in enumerate(zip(self.se_x_dot, self.ses_x_dot))
+        }
+        self.ses_vars_to_scaled_vars.update(subs_var_to_scaled_var)
+
+        self.ses_scaled_vars_to_vars = {
+            scaled_der: der / Ss[idx]
+            for idx, (der, scaled_der) in enumerate(zip(self.se_x_dot, self.ses_x_dot))
+        }
+        self.ses_scaled_vars_to_vars.update(
+            {
+                scaled_var: var / scale
+                for scale, var, scaled_var in zip(Ss, s, self.ses_x + self.ses_y)
+            }
+        )
+
+        if self.verbose:
+            print(
+                "\n",
+                "#" * 10,
+                "Scaled equations: ẋ = f(t,x,y) and g(t,x,y)=0",
+                "#" * 10,
+            )
+
+            print("# with f(x,y,t)=\n")
+            for idx, eq in enumerate(self.ses_f):
+                print(f"Eq {idx:<4}:  ", eq)
+
+            print("\n#and g(x,y,t)=\n")
+
+            for idx, eq in enumerate(self.ses_g):
+                print(f"Eq {n_ode + idx:<4}:  ", eq)
+
+            print("\n# with, x =\n")
+            for var, ic in zip(self.ses_x, self.ses_x_ic):
+                print(f"{str(var):30} with ic= {ic}")
+
+            print("\n# x_dot =\n")
+            for var, ic in zip(self.ses_x_dot, self.ses_x_dot_ic):
+                print(f"{str(var):30} with ic= {ic}")
+
+            print("\n# and, y =\n")
+            for var, ic in zip(self.ses_y, self.ses_y_ic):
+                print(f"{str(var):30} with ic= {ic}")

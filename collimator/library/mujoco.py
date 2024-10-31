@@ -33,7 +33,7 @@ from collimator.framework.error import (
 )
 from collimator.framework.parameter import Parameter
 from collimator.framework.state import LeafState
-from collimator.framework.system_base import parameters
+from collimator.framework import parameters
 from collimator.lazy_loader import LazyLoader
 from collimator.logging import logdata, logger
 

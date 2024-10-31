@@ -12,7 +12,8 @@
 
 from enum import Enum
 from typing import TYPE_CHECKING
-
+import numpy as np
+from collimator.framework import build_recorder
 from collimator.lazy_loader import LazyLoader
 
 if TYPE_CHECKING:
@@ -37,7 +38,142 @@ class EqnEnv:
     """
 
     def __init__(self):
-        self.t = sp.symbols("t")
+        self.t = sp.symbols("t", real=True)
+        self.e = Sym(
+            self,
+            sym_name="e",
+            base_name="constants",
+            val=np.e,
+            kind=SymKind.param,
+        )
+        self.euler_gamma = Sym(
+            self,
+            sym_name="euler_gamma",
+            base_name="constants",
+            val=np.euler_gamma,
+            kind=SymKind.param,
+        )
+        self.pi = Sym(
+            self,
+            sym_name="pi",
+            base_name="constants",
+            val=np.pi,
+            kind=SymKind.param,
+        )
+        self.c = Sym(  # speed of light
+            self,
+            sym_name="c",
+            base_name="constants",
+            val=299792458,
+            kind=SymKind.param,
+        )
+        self.g_n = Sym(  # Standard acceleration of gravity on earth
+            self,
+            sym_name="g_n",
+            base_name="constants",
+            val=9.80665,
+            kind=SymKind.param,
+        )
+        self.G = Sym(  # Newtonian constant of gravitation
+            self,
+            sym_name="G",
+            base_name="constants",
+            val=6.67430e-11,
+            kind=SymKind.param,
+        )
+        self.q = Sym(  # Elementary charge
+            self,
+            sym_name="q",
+            base_name="constants",
+            val=1.602176634e-19,
+            kind=SymKind.param,
+        )
+        self.N_A = Sym(  # Avogadro constant
+            self,
+            sym_name="N_A",
+            base_name="constants",
+            val=6.02214076e23,
+            kind=SymKind.param,
+        )
+        self.F = Sym(  # Faraday constant, C/mol
+            self,
+            sym_name="F",
+            base_name="constants",
+            val=self.q.val * self.N_A.val,
+            kind=SymKind.param,
+        )
+        self.h = Sym(  # Planck constant
+            self,
+            sym_name="h",
+            base_name="constants",
+            val=6.62607015e-34,
+            kind=SymKind.param,
+        )
+        self.k = Sym(  # Boltzmann constant
+            self,
+            sym_name="k",
+            base_name="constants",
+            val=1.380649e-23,
+            kind=SymKind.param,
+        )
+        self.sigma = Sym(  # Stefan-Boltzmann constant
+            self,
+            sym_name="sigma",
+            base_name="constants",
+            val=2
+            * self.pi.val**5
+            * self.k.val**4
+            / (15 * self.h.val**3 * self.c.val**2),
+            kind=SymKind.param,
+        )
+        self.mu_0 = Sym(  # Magnetic constant
+            self,
+            sym_name="mu_0",
+            base_name="constants",
+            val=4 * self.pi.val * 1.00000000055e-7,
+            kind=SymKind.param,
+        )
+        self.epsilon_0 = Sym(  # Electric constant
+            self,
+            sym_name="epsilon_0",
+            base_name="constants",
+            val=1 / (self.mu_0.val * self.c.val * self.c.val),
+            kind=SymKind.param,
+        )
+        self.T_zero = Sym(  # Absolute zero temperture in Celcius
+            self,
+            sym_name="T_zero",
+            base_name="constants",
+            val=-273.15,
+            kind=SymKind.param,
+        )
+        self.R = Sym(  # Molar gas constant
+            self,
+            sym_name="R",
+            base_name="constants",
+            val=self.k.val * self.N_A.val,
+            kind=SymKind.param,
+        )
+
+        self.syms = [
+            self.e,
+            self.euler_gamma,
+            self.pi,
+            self.c,
+            self.g_n,
+            self.G,
+            self.q,
+            self.N_A,
+            self.F,
+            self.h,
+            self.k,
+            self.sigma,
+            self.mu_0,
+            self.epsilon_0,
+            self.T_zero,
+            self.R,
+        ]
+        build_recorder.create_eqn_env()
 
 
 class Domain(Enum):
@@ -49,6 +185,28 @@ class Domain(Enum):
     rotational = 3
     translational = 4
     fluid = 6
+    hydraulic = 7
+
+    def __str__(self):
+        return f"{self.name}"
+
+
+def nodpot_qty(domain):
+    match domain:
+        case Domain.electrical:
+            return "volt"
+        case Domain.thermal:
+            return "temp"
+        case Domain.rotational:
+            return "spd"
+        case Domain.translational:
+            return "spd"
+        case Domain.fluid:
+            return "pressure"
+        case Domain.hydraulic:
+            return "pressure"
+        case _:
+            raise ValueError(f"[nodpot_qty] invalid domain provided {domain}.")
 
 
 class SymKind(Enum):
@@ -60,7 +218,8 @@ class SymKind(Enum):
         conservation equation for a given 'node'. e.g. all forces sum to 0.
      - 'pot' means this symbol is a potential variable. it must appear in at least one
         equality constraint. e.g. all velocities of ports connected to a 'node' must be equal.
-     - 'param' means this symbol is a parameter of the system, e.g. mass, resistance, etc.
+     - 'param' means this symbol is a parameter of the system, e.g. mass, resistance, etc. this
+        used for constants, e.g. e, pi, boltzman_constant, etc.
      - 'in' means this symbol is an input, similar to param, but the value is read in
         periodically. e.g. force signal for controlled_ideal_force_source.
      - 'out' means this symbol is a output and therefore must appear on the LHS of an
@@ -72,7 +231,9 @@ class SymKind(Enum):
      - 'node_pot' means this symbol is in the potential derivative index of the node. See
         AcausalCompiler.add_node_potential_eqs() for details.
      - 'lut' means the symbol represents a lookup table function
-     - 'cond' means conditional, whihc presently is Sympy.Piecewise()
+     - 'cond' means conditional, which presently is Sympy.Piecewise()
+     - 'stream' means it's a "Stream Variable" as defined in Modelica language
+     - 'fluid_fun' is similar to lut and cond, but a function for computing fluid state values.
     """
 
     flow = 0
@@ -84,6 +245,8 @@ class SymKind(Enum):
     node_pot = 7
     lut = 8
     cond = 9
+    stream = 10
+    fluid_fun = 11
 
 
 class Sym:
@@ -179,7 +342,7 @@ class Sym:
         elif int_sym is not None:
             # when this symbol is the derivative w.r.t. time of another symbol,
             # we have to define it as such.
-            self.s = sp.Function(self.name)(eqn_env.t)
+            self.s = sp.Function(self.name, real=True)(eqn_env.t)
             self.s_int = int_sym.s.diff(eqn_env.t)
             # debatable whether this should happen in here or in the components.
             # it's more of a components equation, but if done there, it would
@@ -196,10 +359,10 @@ class Sym:
             # so at least for now, it seems best to keep declaration of der_relations here.
         elif is_fcn:
             # when this symbol is a function of time, we have to define it as such.
-            self.s = sp.Function(self.name)(eqn_env.t)
+            self.s = sp.Function(self.name, real=True)(eqn_env.t)
         else:
             # otherwise, the symbol is just a plain symbol with no other relations.
-            self.s = sp.Symbol(self.name)
+            self.s = sp.Symbol(self.name, real=True)
         self.val = val
         self.kind = kind
         self.ic = ic
@@ -229,6 +392,8 @@ class EqnKind(Enum):
      - 'comp' this equation define component behavior.
      - 'outp' this equation relates an output symbol (a symbol who value is written
         to a causal outport) to an expression.
+     - 'stream' <qty>_inStream = inStream_expr, see page 9 of https://web.mit.edu/crlaugh/Public/stream-docs.pdf
+     - 'fluid' means the equation was created by a fluid model. see fluimd_media.py
     """
 
     pot = 0
@@ -236,6 +401,8 @@ class EqnKind(Enum):
     der_relation = 2
     comp = 3
     outp = 4
+    stream = 5
+    fluid = 6
 
 
 class Eqn:
@@ -264,9 +431,7 @@ class Eqn:
         if self.kind is None:
             return str(self.e)
         else:
-            return (
-                str(self.e) + ":\t\t\t" + str(self.kind) + "\tnid:" + str(self.node_id)
-            )
+            return str(self.kind) + "\t" + str(self.e) + "\tnid:" + str(self.node_id)
 
     @property
     def expr(self):

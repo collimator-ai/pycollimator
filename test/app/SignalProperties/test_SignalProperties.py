@@ -15,7 +15,6 @@ import pytest
 import collimator.testing as test
 import json
 import os
-import collimator
 from collimator.framework.error import ShapeMismatchError
 
 pytestmark = pytest.mark.app
@@ -27,12 +26,7 @@ def load_json(file_path):
 
 
 def test_0039_signal_types(request):
-    test_paths = test.get_paths(request)
-    collimator.load_model(
-        test_paths["testdir"],
-        model="model_signal_types.json",
-        logsdir=test_paths["logsdir"],
-    )
+    test_paths = test.load_model(request, "model_signal_types.json")
     # model.check() runs in __init__
 
     sol_path = os.path.join(test_paths["testdir"], "signal_types_expected.json")
@@ -45,12 +39,7 @@ def test_0039_signal_types(request):
 
 
 def test_time_mode(request):
-    test_paths = test.get_paths(request)
-    collimator.load_model(
-        test_paths["testdir"],
-        model="model_time_mode.json",
-        logsdir=test_paths["logsdir"],
-    )
+    test_paths = test.load_model(request, "model_time_mode.json")
 
     # get the time_mode assignment from the log json
     tma_path = os.path.join(test_paths["logsdir"], "signal_types.json")
@@ -204,11 +193,7 @@ def test_time_mode(request):
 
 
 def test_sm_time_mode(request):
-    test_paths = test.get_paths(request)
-    collimator.load_model(
-        test_paths["testdir"], model="sm_model.json", logsdir=test_paths["logsdir"]
-    )
-
+    test_paths = test.load_model(request, "sm_model.json")
     # get the time_mode assignment from the log json
     tma_path = os.path.join(test_paths["logsdir"], "signal_types.json")
     tma = load_json(tma_path)
@@ -259,12 +244,7 @@ def test_sm_time_mode(request):
 
 
 def test_time_mode_user_def(request):
-    test_paths = test.get_paths(request)
-    collimator.load_model(
-        test_paths["testdir"],
-        model="model_time_mode_user_def.json",
-        logsdir=test_paths["logsdir"],
-    )
+    test_paths = test.load_model(request, "model_time_mode_user_def.json")
 
     # get the time_mode assignment from the log json
     tma_path = os.path.join(test_paths["logsdir"], "signal_types.json")
@@ -296,11 +276,7 @@ def test_time_mode_user_def(request):
 def test_signal_type_error(request):
     test_paths = test.get_paths(request)
     with pytest.raises(ShapeMismatchError) as exc:
-        collimator.load_model(
-            test_paths["testdir"],
-            model="signal_type_error.json",
-            logsdir=test_paths["logsdir"],
-        )
+        test.load_model(request, "signal_type_error.json")
 
     # Even though the previous step raised an Error, we still
     # expect the process to have generated signal_types.json,

@@ -15,9 +15,9 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sys
 import traceback
 from typing import TYPE_CHECKING, Any
-import warnings
 
 import numpy as np
 
@@ -31,7 +31,9 @@ from collimator.dashboard.serialization.time_mode import (
     time_mode_node,
     time_mode_port,
     time_mode_node_with_ports,
+    time_mode_diagram,
 )
+from collimator.dashboard import utils
 from ..experimental import AcausalSystem
 from ..framework import Diagram, IntegerTime, SystemBase, ErrorCollector
 from ..simulation import SimulatorOptions, simulate
@@ -52,6 +54,13 @@ def load_model_from_dir(
     block_overrides: dict[str, SystemBase] = None,
     parameter_overrides: dict[str, model_json.Parameter] = None,
 ) -> from_model_json.SimulationContext:
+    modeldir = os.path.abspath(modeldir)
+
+    # For loading custom leaf systems
+    utils.add_py_init_file(modeldir)
+    if modeldir not in sys.path:
+        sys.path.append(modeldir)
+
     # register reference submodels
     file_pattern = os.path.join(modeldir, "submodel-*-latest.json")
     submodel_files = glob.glob(file_pattern)
@@ -79,6 +88,7 @@ def load_model(
     npydir: str = None,
     block_overrides=None,
     parameter_overrides: dict[str, model_json.Parameter] = None,
+    check=True,
 ) -> AppInterface:
     model = load_model_from_dir(
         modeldir,
@@ -91,6 +101,7 @@ def load_model(
         model,
         logsdir=logsdir,
         npydir=npydir,
+        check=check,
     )
 
 
@@ -258,7 +269,7 @@ def get_signal_types(
         signal_type_nodes.append(nd.__dict__)
 
     # diagram time mode
-    diagram_tm = time_mode_node_with_ports(nodes_tm)
+    diagram_tm = time_mode_diagram(nodes_tm)
 
     return signal_type_nodes, diagram_tm
 
@@ -269,6 +280,7 @@ class AppInterface:
         sim_context: from_model_json.SimulationContext,
         logsdir: str = None,
         npydir: str = None,
+        check=True,
     ):
         self.context: ContextBase = None
         self.sim_context = sim_context
@@ -281,9 +293,14 @@ class AppInterface:
         # called here to maintain behavior expected by some tests,
         # i.e. some data created in statatic analysis is made available
         # in the object after only calling __init__.
-        self.check()
+        if check:
+            self.check()
 
-    def check(self):
+    def check(self, write_signals_json=None):
+        if self.static_analysis_complete:
+            logger.warning("Static analysis already completed.")
+            return
+
         # execute the all static analysis operations, raising errors/warnings
         # as appropriate.
 
@@ -307,7 +324,13 @@ class AppInterface:
             raise exc
 
         # Write 'signal_types.json'
-        if self.logsdir is not None:
+        if write_signals_json is None:
+            # Compatibility with some CI checks.
+            write_signals_json = self.logsdir is not None
+
+        if write_signals_json:
+            if self.logsdir is None:
+                raise ValueError("--logsdir must be set to write signal_types.json")
             try:
                 os.makedirs(self.logsdir, exist_ok=True)
                 context = self.context
@@ -329,8 +352,8 @@ class AppInterface:
 
             except Exception as exc:
                 traceback.print_exc()
-                warnings.warn(
-                    f"Failed to generate signal_types.json due to exception: {exc}."
+                logger.warning(
+                    "Failed to generate signal_types.json due to exception: %s", exc
                 )
 
         if error_collector.errors:
@@ -365,9 +388,9 @@ class AppInterface:
             self.check()
 
         if start_time is None:
-            start_time = 0.0
+            start_time = self.sim_context.start_time or 0.0
         if stop_time is None:
-            stop_time = 10.0
+            stop_time = self.sim_context.stop_time or 10.0
 
         start_time = float(start_time)
         stop_time = float(stop_time)

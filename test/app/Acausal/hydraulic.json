@@ -1,0 +1,327 @@
+{
+    "$schema_version": "0.1",
+    "uuid": "7e3a92e4-7d48-4511-b285-01f8977e3a6b",
+    "name": "hydraulic test",
+    "diagram": {
+        "nodes": [
+            {
+                "uuid": "4a618f19-e3ca-4bd5-8f01-771f82a5896f",
+                "name": "Accumulator_0",
+                "type": "acausal.hydraulic.Accumulator",
+                "outputs": [],
+                "inputs": [
+                    {
+                        "name": "port",
+                        "kind": "static",
+                        "variant": {
+                            "acausal_domain": "hydraulic",
+                            "variant_kind": "acausal"
+                        }
+                    }
+                ],
+                "parameters": {
+                    "area": {
+                        "value": "1.0"
+                    },
+                    "initial_pressure": {
+                        "value": "0.0"
+                    },
+                    "initial_pressure_fixed": {
+                        "value": "False"
+                    },
+                    "k": {
+                        "value": "1.0"
+                    }
+                },
+                "uiprops": {
+                    "x": 520,
+                    "y": 192,
+                    "port_alignment": "spaced"
+                }
+            },
+            {
+                "uuid": "fd85e731-9c44-4526-83c3-71d4e5c1d615",
+                "name": "Pipe_0",
+                "type": "acausal.hydraulic.Pipe",
+                "inputs": [
+                    {
+                        "name": "port_a",
+                        "kind": "static",
+                        "variant": {
+                            "acausal_domain": "hydraulic",
+                            "variant_kind": "acausal"
+                        }
+                    }
+                ],
+                "outputs": [
+                    {
+                        "name": "port_b",
+                        "kind": "static",
+                        "variant": {
+                            "acausal_domain": "hydraulic",
+                            "variant_kind": "acausal"
+                        }
+                    }
+                ],
+                "parameters": {
+                    "R": {
+                        "value": "1.0"
+                    },
+                    "enable_resistance_port": {
+                        "value": "false"
+                    }
+                },
+                "uiprops": {
+                    "x": 664,
+                    "y": 192,
+                    "port_alignment": "spaced"
+                }
+            },
+            {
+                "uuid": "76780b01-19a0-4698-8d6e-c7f6b980bcae",
+                "name": "PressureSensor_0",
+                "type": "acausal.hydraulic.PressureSensor",
+                "inputs": [
+                    {
+                        "name": "port_a",
+                        "kind": "static",
+                        "variant": {
+                            "acausal_domain": "hydraulic",
+                            "variant_kind": "acausal"
+                        }
+                    }
+                ],
+                "outputs": [
+                    {
+                        "name": "P_rel",
+                        "kind": "static"
+                    }
+                ],
+                "parameters": {
+                    "enable_port_b": {
+                        "value": "false"
+                    }
+                },
+                "uiprops": {
+                    "x": 672,
+                    "y": 96,
+                    "port_alignment": "spaced"
+                }
+            },
+            {
+                "uuid": "11b4f720-7e22-4230-9734-80d01c8122db",
+                "name": "PressureSource_0",
+                "type": "acausal.hydraulic.PressureSource",
+                "outputs": [],
+                "inputs": [
+                    {
+                        "name": "port",
+                        "kind": "static",
+                        "variant": {
+                            "acausal_domain": "hydraulic",
+                            "variant_kind": "acausal"
+                        }
+                    }
+                ],
+                "parameters": {
+                    "enable_pressure_port": {
+                        "value": "false"
+                    },
+                    "pressure": {
+                        "value": "0.1"
+                    }
+                },
+                "uiprops": {
+                    "x": 664,
+                    "y": 288,
+                    "port_alignment": "spaced"
+                }
+            },
+            {
+                "uuid": "8423c919-3599-4cd2-bdf3-d7512df130ca",
+                "name": "HydraulicProperties_0",
+                "type": "acausal.hydraulic.HydraulicProperties",
+                "inputs": [],
+                "outputs": [
+                    {
+                        "name": "port",
+                        "kind": "static",
+                        "variant": {
+                            "acausal_domain": "hydraulic",
+                            "variant_kind": "acausal"
+                        }
+                    }
+                ],
+                "parameters": {
+                    "fluid_name": {
+                        "value": "water",
+                        "is_string": true
+                    }
+                },
+                "uiprops": {
+                    "x": 520,
+                    "y": 80,
+                    "port_alignment": "spaced"
+                }
+            }
+        ],
+        "links": [
+            {
+                "uuid": "373945cb-f9ea-48cf-9df4-77c8df0cc27d",
+                "src": {
+                    "node": "11b4f720-7e22-4230-9734-80d01c8122db",
+                    "port": 0,
+                    "port_side": "inputs"
+                },
+                "dst": {
+                    "node": "fd85e731-9c44-4526-83c3-71d4e5c1d615",
+                    "port": 0,
+                    "port_side": "outputs"
+                },
+                "uiprops": {
+                    "link_type": {
+                        "connection_method": "direct_to_block"
+                    },
+                    "segments": [],
+                    "hang_coord_start": {
+                        "x": 736,
+                        "y": 320
+                    }
+                }
+            },
+            {
+                "uuid": "e83c283a-d977-4bbf-a149-d4984749a1c6",
+                "src": {
+                    "node": "fd85e731-9c44-4526-83c3-71d4e5c1d615",
+                    "port": 0,
+                    "port_side": "inputs"
+                },
+                "dst": {
+                    "node": "4a618f19-e3ca-4bd5-8f01-771f82a5896f",
+                    "port": 0,
+                    "port_side": "inputs"
+                },
+                "uiprops": {
+                    "link_type": {
+                        "connection_method": "direct_to_block"
+                    },
+                    "segments": [],
+                    "hang_coord_start": {
+                        "x": 664,
+                        "y": 224
+                    }
+                }
+            },
+            {
+                "uuid": "48cfc8d5-9402-45c4-b5ba-d6c7e6073106",
+                "src": {
+                    "node": "4a618f19-e3ca-4bd5-8f01-771f82a5896f",
+                    "port": 0,
+                    "port_side": "inputs"
+                },
+                "dst": {
+                    "node": "76780b01-19a0-4698-8d6e-c7f6b980bcae",
+                    "port": 0,
+                    "port_side": "inputs"
+                },
+                "uiprops": {
+                    "link_type": {
+                        "connection_method": "direct_to_block"
+                    },
+                    "segments": [
+                        {
+                            "segment_direction": "vert",
+                            "coordinate": 600
+                        },
+                        {
+                            "segment_direction": "horiz",
+                            "coordinate": 224
+                        },
+                        {
+                            "segment_direction": "vert",
+                            "coordinate": 632
+                        },
+                        {
+                            "segment_direction": "horiz",
+                            "coordinate": 128
+                        },
+                        {
+                            "segment_direction": "vert",
+                            "coordinate": 664
+                        }
+                    ],
+                    "hang_coord_start": {
+                        "x": 616,
+                        "y": 224
+                    }
+                }
+            },
+            {
+                "uuid": "884cafe0-680f-4ccc-8335-fddae34ae9e7",
+                "src": {
+                    "node": "4a618f19-e3ca-4bd5-8f01-771f82a5896f",
+                    "port": 0,
+                    "port_side": "inputs"
+                },
+                "dst": {
+                    "node": "8423c919-3599-4cd2-bdf3-d7512df130ca",
+                    "port": 0,
+                    "port_side": "outputs"
+                },
+                "uiprops": {
+                    "link_type": {
+                        "connection_method": "link_tap",
+                        "tap_coordinate": 632,
+                        "tapped_link_uuid": "48cfc8d5-9402-45c4-b5ba-d6c7e6073106",
+                        "tapped_segment": {
+                            "segment_type": "real",
+                            "tapped_segment_direction": "horiz",
+                            "tapped_segment_index": 3
+                        }
+                    },
+                    "segments": []
+                }
+            }
+        ],
+        "annotations": [],
+        "uuid": "c634a1bd-c45b-45f5-808b-d8517a835349"
+    },
+    "configuration": {
+        "fixed_results_interval": 0,
+        "numerical_backend": "auto",
+        "record_mode": "all",
+        "sample_time": 0.1,
+        "sim_output_mode": "auto",
+        "solver": {
+            "absolute_tolerance": 1e-8,
+            "max_checkpoints": 16,
+            "max_minor_steps_per_major_step": 4096,
+            "max_step": 1000000,
+            "method": "auto",
+            "min_step": 0,
+            "relative_tolerance": 0.000001
+        },
+        "start_time": 0,
+        "stop_time": 10,
+        "worker_type": "any",
+        "workspace": {},
+        "data_points_min": 0,
+        "events_handling": "normal",
+        "continuous_time_result_interval": 0,
+        "__developer_options": {
+            "disable_firejail": false
+        }
+    },
+    "parameters": {},
+    "submodels": {
+        "diagrams": {},
+        "references": {}
+    },
+    "state_machines": {},
+    "needs_autolayout": false,
+    "created_at": "2024-09-08T15:45:17Z",
+    "updated_at": "2024-09-11T14:31:49Z",
+    "version": 70,
+    "project_uuid": "e88527f4-6aac-4259-af53-fbaad5cf699b",
+    "kind": "Model"
+}

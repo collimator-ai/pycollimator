@@ -98,7 +98,7 @@ class MLP(FeedthroughBlock):
             "use_bias",
             "use_final_bias",
             "file_name",
-        ]
+        ],
     )
     def __init__(
         self,
@@ -171,7 +171,9 @@ class MLP(FeedthroughBlock):
                 )
             return activation_mapping.get(activation_str, lambda x: x)
 
-        seed = np.random.randint(0, 2**32) if seed is None else int(seed)
+        seed = (
+            np.random.randint(0, 2**32, dtype=np.int64) if seed is None else int(seed)
+        )
         self.key = random.PRNGKey(seed)
 
         self.mlp = eqx.nn.MLP(
@@ -229,6 +231,8 @@ class MLP(FeedthroughBlock):
         The choice of an optional `mlp_params` is to enable training of the
         models in a notebook and easily seralizing them for use in the UI.
         """
+        self.create_context()
+
         if mlp_params is None:
             mlp = self.mlp
         else:

@@ -31,9 +31,9 @@ from collimator.library import (
     Saturate,
 )
 from collimator.simulation import SimulatorOptions
+from collimator.testing.markers import skip_if_not_jax
 
-# from collimator import logging
-# from collimator.logging import logger
+skip_if_not_jax()
 
 
 class ParametricGain(collimator.LeafSystem):

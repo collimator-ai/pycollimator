@@ -14,6 +14,7 @@
 
 from abc import ABC, abstractmethod
 from functools import partial
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -24,13 +25,17 @@ from collimator.lazy_loader import LazyLoader
 from collimator.framework.error import StaticError, ErrorCollector
 from collimator.backend import numpy_api as cnp
 
-control = LazyLoader(
-    "control", globals(), "control"
-)  # For formatting state-space systems
+if TYPE_CHECKING:
+    import control
+    import scipy.signal as signal
+else:
+    control = LazyLoader(
+        "control", globals(), "control"
+    )  # For formatting state-space systems
 
-signal = LazyLoader(
-    "signal", globals(), "scipy.signal"
-)  # For converting transfer functions to state-space
+    signal = LazyLoader(
+        "signal", globals(), "scipy.signal"
+    )  # For converting transfer functions to state-space
 
 __all__ = [
     "LTISystem",
@@ -73,42 +78,11 @@ def _reshape(A, B, C, D):
 
 
 class LTISystemBase(LeafSystem, ABC):
-    """Base class for linear time-invariant systems.
+    """Base class for linear time-invariant systems."""
 
-    Parameters:
-        A: State matrix of size n x n
-        B: Input matrix of size n x m
-        C: Output matrix of size p x n
-        D: Feedthrough matrix of size p x m
-        initialize_states: Initial state vector of size n (default: 0)
-    """
-
-    @parameters(dynamic=["initialize_states", "A", "B", "C", "D"])
-    def __init__(self, A, B, C, D, initialize_states=None, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.declare_input_port()  # Single input port (u)
-
-    def initialize(self, A, B, C, D, initialize_states=None, **kwargs):
-        (self.A, self.B, self.C, self.D, self.n, self.m, self.p) = _reshape(A, B, C, D)
-
-        self.parameters["A"].set(self.A)
-        self.parameters["B"].set(self.B)
-        self.parameters["C"].set(self.C)
-        self.parameters["D"].set(self.D)
-
-        self.is_feedthrough = not cnp.allclose(D, 0.0)
-        self.scalar_output = self.p == 1
-
-        if initialize_states is None:
-            initialize_states = cnp.zeros(self.n)
-        else:
-            initialize_states = cnp.array(initialize_states)
-        # Broadcast to size (n,) if only a scalar-valued list, numpy array,
-        # jax array, or float is provided at initialization
-        if initialize_states.size == 1 and self.n > 1:
-            initialize_states = cnp.ones(self.n) * initialize_states.ravel()
-
-        self.initialize_states = initialize_states
 
     @abstractmethod
     def _eval_output(self, time, state, *inputs, **params):
@@ -133,6 +107,23 @@ class LTISystemBase(LeafSystem, ABC):
 
     def get_feedthrough(self):
         return [(0, 0)] if self.is_feedthrough else []
+
+    def _init_state(self, A, B, C, D, initialize_states=None):
+        (self.A, self.B, self.C, self.D, self.n, self.m, self.p) = _reshape(A, B, C, D)
+
+        self.is_feedthrough = bool(not cnp.allclose(D, 0.0))
+        self.scalar_output = self.p == 1
+
+        if initialize_states is None:
+            initialize_states = cnp.zeros(self.n)
+        else:
+            initialize_states = cnp.array(initialize_states)
+        # Broadcast to size (n,) if only a scalar-valued list, numpy array,
+        # jax array, or float is provided at initialization
+        if initialize_states.size == 1 and self.n > 1:
+            initialize_states = cnp.ones(self.n) * initialize_states.ravel()
+
+        self.initialize_states = initialize_states
 
 
 class LTISystem(LTISystemBase):
@@ -159,8 +150,9 @@ class LTISystem(LTISystemBase):
         initialize_states: Initial state vector of size n (default: 0)
     """
 
+    @parameters(dynamic=["A", "B", "C", "D"], static=["initialize_states"])
     def __init__(self, A, B, C, D, initialize_states=None, *args, **kwargs):
-        super().__init__(A, B, C, D, initialize_states, *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self._output_port_idx = self.declare_output_port(
             self._eval_output
         )  # Single output port (y)
@@ -168,8 +160,8 @@ class LTISystem(LTISystemBase):
             self.declare_continuous_state()
         )  # Single continuous state (x)
 
-    def initialize(self, **kwargs):
-        super().initialize(**kwargs)
+    def _init_state(self, A, B, C, D, initialize_states=None):
+        super()._init_state(A, B, C, D, initialize_states)
         self.configure_output_port(
             self._output_port_idx,
             self._eval_output,
@@ -182,10 +174,19 @@ class LTISystem(LTISystemBase):
             default_value=self.initialize_states,
         )
 
-    def _eval_output(self, time, state, *inputs, **params):
-        x = state.continuous_state
+    def initialize(self, A, B, C, D, initialize_states=None, **kwargs):
+        self._init_state(A, B, C, D, initialize_states)
+        self.parameters["A"].set(self.A)
+        self.parameters["B"].set(self.B)
+        self.parameters["C"].set(self.C)
+        self.parameters["D"].set(self.D)
 
-        C, D = params["C"], params["D"]
+    def _eval_output(self, time, state, *inputs, **params):
+        self.C, self.D = params["C"], params["D"]
+        return self._eval_output_base(self.C, self.D, state, *inputs)
+
+    def _eval_output_base(self, C, D, state, *inputs):
+        x = state.continuous_state
         y = cnp.matmul(C, cnp.atleast_1d(x))
 
         if self.is_feedthrough:
@@ -194,15 +195,15 @@ class LTISystem(LTISystemBase):
 
         # Handle the special case of scalar output
         if self.scalar_output:
-            y = y[0]
+            y = cnp.atleast_1d(y)[0]
 
         return y
 
     def ode(self, time, state, u, **params):
         x = state.continuous_state
-        A, B = params["A"], params["B"]
-        Ax = cnp.matmul(A, cnp.atleast_1d(x))
-        Bu = cnp.matmul(B, cnp.atleast_1d(u))
+        self.A, self.B = params["A"], params["B"]
+        Ax = cnp.matmul(self.A, cnp.atleast_1d(x))
+        Bu = cnp.matmul(self.B, cnp.atleast_1d(u))
         return Ax + Bu
 
     @property
@@ -233,15 +234,26 @@ class TransferFunction(LTISystem):
         den: Denominator polynomial coefficients, in descending powers of s
     """
 
+    # tf2ss is not implemented in jax.scipy.signal so num and den can't be
+    # dynamic parameters.
     @parameters(static=["num", "den"])
     def __init__(self, num, den, *args, **kwargs):
         A, B, C, D = signal.tf2ss(num, den)
+        self._num = num
+        self._den = den
         super().__init__(A, B, C, D, *args, **kwargs)
+
+    def _eval_output(self, time, state, *inputs, **params):
+        _, _, self.C, self.D = signal.tf2ss(self._num, self._den)
+        return self._eval_output_base(self.C, self.D, state, *inputs)
+
+    def ode(self, time, state, u, **params):
+        self.A, self.B, _, _ = signal.tf2ss(self._num, self._den)
+        return super().ode(time, state, u, A=self.A, B=self.B)
 
     def initialize(self, num, den, **kwargs):
         A, B, C, D = signal.tf2ss(num, den)
-        kwargs.update(A=A, B=B, C=C, D=D)
-        super().initialize(**kwargs)
+        self._init_state(A, B, C, D)
 
 
 class PID(LTISystem):
@@ -283,7 +295,10 @@ class PID(LTISystem):
         initial_state: Initial state of the integral term (default: 0)
     """
 
-    @parameters(dynamic=["kp", "ki", "kd", "n", "initial_state"])
+    @parameters(
+        dynamic=["kp", "ki", "kd", "n"],
+        static=["initial_state"],
+    )
     def __init__(
         self,
         kp,
@@ -310,11 +325,26 @@ class PID(LTISystem):
         D = cnp.array([(kp + kd * n)])
         return A, B, C, D
 
+    def _eval_output(self, time, state, *inputs, **params):
+        kp, ki, kd, n = params["kp"], params["ki"], params["kd"], params["n"]
+
+        A, B, C, D = self._get_abcd(kp, ki, kd, n)
+        (self.A, self.B, self.C, self.D, self.n, self.m, self.p) = _reshape(A, B, C, D)
+
+        return self._eval_output_base(self.C, self.D, state, *inputs)
+
+    def ode(self, time, state, u, **params):
+        kp, ki, kd, n = params["kp"], params["ki"], params["kd"], params["n"]
+
+        A, B, C, D = self._get_abcd(kp, ki, kd, n)
+        (self.A, self.B, self.C, self.D, self.n, self.m, self.p) = _reshape(A, B, C, D)
+
+        return super().ode(time, state, u, A=self.A, B=self.B)
+
     def initialize(self, kp, ki, kd, n, initial_state, **kwargs):
         A, B, C, D = self._get_abcd(kp, ki, kd, n)
         initialize_states = cnp.array([initial_state, 0.0])
-        kwargs.update(A=A, B=B, C=C, D=D, initialize_states=initialize_states)
-        super().initialize(**kwargs)
+        self._init_state(A, B, C, D, initialize_states)
 
 
 class Derivative(LTISystem):
@@ -343,7 +373,9 @@ class Derivative(LTISystem):
         (0) y: Output (scalar), estimating the time derivative du/dt
     """
 
-    @parameters(dynamic=["filter_coefficient"])
+    # tf2ss is not implemented in jax.scipy.signal so filter_coefficient can't be
+    # a dynamic parameter.
+    @parameters(static=["filter_coefficient"])
     def __init__(self, filter_coefficient=100, *args, **kwargs):
         N = filter_coefficient
         num = [N, 0]
@@ -351,14 +383,19 @@ class Derivative(LTISystem):
         A, B, C, D = signal.tf2ss(num, den)
         super().__init__(A, B, C, D, *args, **kwargs)
 
+    def _eval_output(self, time, state, *inputs, **params):
+        return self._eval_output_base(self.C, self.D, state, *inputs)
+
+    def ode(self, time, state, u, **params):
+        return super().ode(time, state, u, A=self.A, B=self.B)
+
     def initialize(self, filter_coefficient, **kwargs):
         N = filter_coefficient
         num = [N, 0]
         den = [1, N]
 
         A, B, C, D = signal.tf2ss(num, den)
-        kwargs.update(A=A, B=B, C=C, D=D)
-        super().initialize(**kwargs)
+        self._init_state(A, B, C, D)
 
     def check_types(
         self,
@@ -422,6 +459,7 @@ def linearize(system, base_context, name=None, output_index=None):
         return tangents
 
     lin_sys = LTISystem(*_jvp_to_ss(jac, xc0, u0), name=name)
+    lin_sys.create_context()
 
     if restore_fixed_val:
         input_port.fix_value(u0)
@@ -525,8 +563,9 @@ class LTISystemDiscrete(LTISystemBase):
         initialize_states: Initial state vector of size n (default: 0)
     """
 
+    @parameters(dynamic=["A", "B", "C", "D"], static=["initialize_states"])
     def __init__(self, A, B, C, D, dt, initialize_states=None, *args, **kwargs):
-        super().__init__(A, B, C, D, initialize_states, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         self.dt = dt
         self.declare_periodic_update(
@@ -539,8 +578,8 @@ class LTISystemDiscrete(LTISystemBase):
             self._eval_output
         )  # Single output port (y)
 
-    def initialize(self, **kwargs):
-        super().initialize(**kwargs)
+    def _init_state(self, A, B, C, D, initialize_states=None):
+        super()._init_state(A, B, C, D, initialize_states)
         self.declare_discrete_state(
             default_value=self.initialize_states,
         )  # Single discrete state (x)
@@ -549,18 +588,25 @@ class LTISystemDiscrete(LTISystemBase):
             self._eval_output,
             period=self.dt,
             offset=0.0,
-            default_value=jnp.zeros(self.p) if self.p > 1 else 0.0,
+            default_value=cnp.zeros(self.p) if self.p > 1 else 0.0,
             requires_inputs=self.is_feedthrough,
         )
 
+    def initialize(self, A, B, C, D, initialize_states=None, **kwargs):
+        self._init_state(A, B, C, D, initialize_states)
+        self.parameters["A"].set(self.A)
+        self.parameters["B"].set(self.B)
+        self.parameters["C"].set(self.C)
+        self.parameters["D"].set(self.D)
+
     def _eval_output(self, time, state, *inputs, **params):
         x = state.discrete_state
-        C, D = params["C"], params["D"]
-        y = jnp.matmul(C, jnp.atleast_1d(x))
+        self.C, self.D = params["C"], params["D"]
+        y = cnp.matmul(self.C, cnp.atleast_1d(x))
 
         if self.is_feedthrough:
             (u,) = inputs
-            y += jnp.matmul(D, jnp.atleast_1d(u))
+            y += cnp.matmul(self.D, cnp.atleast_1d(u))
 
         # Handle the special case of scalar output
         if self.scalar_output:
@@ -570,9 +616,9 @@ class LTISystemDiscrete(LTISystemBase):
 
     def _update(self, time, state, u, **params):
         x = state.discrete_state
-        A, B = params["A"], params["B"]
-        Ax = jnp.matmul(A, jnp.atleast_1d(x))
-        Bu = jnp.matmul(B, jnp.atleast_1d(u))
+        self.A, self.B = params["A"], params["B"]
+        Ax = cnp.matmul(self.A, cnp.atleast_1d(x))
+        Bu = cnp.matmul(self.B, cnp.atleast_1d(u))
         return Ax + Bu
 
     @property
@@ -608,12 +654,21 @@ class TransferFunctionDiscrete(LTISystemDiscrete):
             Initial state vector (default: 0)
     """
 
+    # tf2ss is not implemented in jax.scipy.signal so num and den can't be
+    # dynamic parameters.
     @parameters(static=["num", "den"])
     def __init__(self, dt, num, den, initialize_states=None, *args, **kwargs):
         A, B, C, D = signal.tf2ss(num, den)
         super().__init__(A, B, C, D, dt, initialize_states, *args, **kwargs)
 
+    def _eval_output(self, time, state, *inputs, **params):
+        return super()._eval_output(
+            time, state, *inputs, A=self.A, B=self.B, C=self.C, D=self.D
+        )
+
+    def _update(self, time, state, u, **params):
+        return super()._update(time, state, u, A=self.A, B=self.B)
+
     def initialize(self, num, den, **kwargs):
         A, B, C, D = signal.tf2ss(num, den)
-        kwargs.update(A=A, B=B, C=C, D=D)
-        super().initialize(**kwargs)
+        self._init_state(A, B, C, D)

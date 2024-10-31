@@ -63,9 +63,10 @@ into a more efficient order for compilation.
 from __future__ import annotations
 
 import abc
-from typing import TYPE_CHECKING, List, Mapping, Hashable
+from typing import TYPE_CHECKING, List, Mapping, Hashable, Set
 
 import networkx as nx
+
 
 if TYPE_CHECKING:
     from .cache import Cache, SystemCallback
@@ -170,22 +171,42 @@ class DependencyTracker:
             self.subscribers.append(subscriber)
 
     def notify_subscribers(
-        self, cache: Cache, dependency_graph: DependencyGraph
+        self,
+        cache: Cache,
+        dependency_graph: DependencyGraph,
+        local_only: bool = False,
+        visited: Set[DependencyTracker] = None,
     ) -> Cache:
+        if visited is None:
+            visited = set()
+
         for subscriber in self.subscribers:
+            if subscriber in visited:
+                continue
+            if local_only and subscriber.owning_system != self.owning_system:
+                continue
             # logger.debug(
             #     f"    Notifying {subscriber.description} of change to {self.description}"
             # )
-            cache = subscriber.note_prerequisite_change(cache, dependency_graph)
+            visited.add(subscriber)
+            cache = subscriber._note_prerequisite_change(
+                cache, dependency_graph, local_only, visited
+            )
         return cache
 
-    def note_prerequisite_change(
-        self, cache: Cache, dependency_graph: DependencyGraph
+    def _note_prerequisite_change(
+        self,
+        cache: Cache,
+        dependency_graph: DependencyGraph,
+        local_only: bool,
+        visited: Set[DependencyTracker],
     ) -> Cache:
         if self.callback_index is not None:
             # logger.debug(f"    Invalidating cache {self.callback_index} for {self.ticket}")
             cache = mark_cache(cache, self.callback_index, is_out_of_date=True)
-        return self.notify_subscribers(cache, dependency_graph=dependency_graph)
+        return self.notify_subscribers(
+            cache, dependency_graph, local_only=local_only, visited=visited
+        )
 
     def __repr__(self) -> str:
         return self.description
@@ -193,22 +214,46 @@ class DependencyTracker:
     def finalize(self):
         self._is_finalized = True
 
-    def depends_on(self, tickets: list[DependencyTicket]) -> bool:
+    # This method is only called during init
+    def depends_on(
+        self,
+        tickets: list[DependencyTicket],
+    ) -> bool:
         """Check if this tracker depends on the given ticket."""
-        if self.ticket in tickets:
-            return True
-        for prerequisite in self.prerequisites:
-            if prerequisite.depends_on(tickets):
+        visited = set()
+        to_visit = [self]
+        while to_visit:
+            current = to_visit.pop()
+            if current in visited:
+                continue
+            if current.ticket in tickets:
                 return True
+            visited.add(current)
+            for prerequisite in current.prerequisites:
+                if prerequisite in visited:
+                    continue
+                to_visit.append(prerequisite)
         return False
 
-    def is_prerequisite_of(self, tickets: list[DependencyTicket]) -> bool:
+    # This method is only called during init
+    def is_prerequisite_of(
+        self,
+        tickets: list[DependencyTicket],
+    ) -> bool:
         """Check if this tracker is a prerequisite of the given ticket."""
-        if self.ticket in tickets:
-            return True
-        for subscriber in self.subscribers:
-            if subscriber.is_prerequisite_of(tickets):
+        visited = set()
+        to_visit = [self]
+        while to_visit:
+            current = to_visit.pop()
+            if current in visited:
+                continue
+            if current.ticket in tickets:
                 return True
+            visited.add(current)
+            for subscriber in current.subscribers:
+                if subscriber in visited:
+                    continue
+                to_visit.append(subscriber)
         return False
 
 
@@ -313,7 +358,7 @@ class DependencyGraphFactory(metaclass=abc.ABCMeta):
 
         # Subscribe to system-specific sources
         for source in system.callbacks:
-            description = f"{system.name}.{source.name}"
+            description = f"{system.name_path_str}.{source.name}"
             self.dependency_graph[source.ticket] = DependencyTracker(
                 description,
                 source.ticket,
@@ -458,12 +503,18 @@ class DiagramDependencyGraphFactory(DependencyGraphFactory):
 
 
 def _add_prereqs_to_graph(
-    graph: nx.DiGraph, base_node: DependencyTracker, node: DependencyTracker = None
-) -> nx.DiGraph:
+    graph: nx.DiGraph,
+    visited_edges: set[DependencyTracker],
+    base_node: DependencyTracker,
+    node: DependencyTracker = None,
+):
     """Recursively add edges to the graph if there is a dependency."""
-
     if node is None:
         node = base_node
+
+    # This prevents very long recursions in complex graphs
+    if (base_node, node) in visited_edges:
+        return
 
     # Terminates if there are no prereqs (i.e. a source tracker like time)
     # or if the tracker is another discrete output port in the graph.
@@ -479,13 +530,14 @@ def _add_prereqs_to_graph(
 
         else:
             # Check if any of the prereqs of the current prereq are in the graph
-            graph = _add_prereqs_to_graph(graph, base_node, p)
+            _add_prereqs_to_graph(graph, visited_edges, base_node, p)
 
-    return graph
+    visited_edges.add((base_node, node))
 
 
 def sort_trackers(trackers: list[DependencyTracker]) -> list[DependencyTracker]:
     graph = nx.DiGraph()
+    visited_edges = set()
 
     for tracker in trackers:
         graph.add_node(tracker, label=tracker.description)
@@ -493,7 +545,9 @@ def sort_trackers(trackers: list[DependencyTracker]) -> list[DependencyTracker]:
     # For each tracker, determine if it depends on any other trackers.
     # If so, add an edge to the graph.
     for tracker in trackers:
-        _add_prereqs_to_graph(graph, tracker)
+        _add_prereqs_to_graph(graph, visited_edges, tracker)
 
     # Sort the trackers based on the directed graph
-    return list(nx.topological_sort(graph))
+    sorted_trackers = list(nx.topological_sort(graph))
+
+    return sorted_trackers

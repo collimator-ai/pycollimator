@@ -167,11 +167,11 @@ def test_system_with_params():
     p = Parameter(name="p", value=1)
     system = SystemWithParams(S=p, D=p)
 
-    assert len(p.static_dependents()) == 1
-    static_dependent = list(p.static_dependents())[0]
+    assert len(p.static_dependents) == 1
+    static_dependent = list(p.static_dependents)[0]
     assert system.parameters["S"] is static_dependent
     assert system.parameters["S"].is_static
     assert not system.parameters["D"].is_static
 
     p_plus_one = p + 1
-    assert len(p_plus_one.static_dependents()) == 0
+    assert len(p_plus_one.static_dependents) == 0

@@ -21,6 +21,7 @@ import click
 import numpy as np
 from simpleeval import EvalWithCompoundTypes
 
+from collimator.simulation import SimulatorOptions
 from collimator.logging import logdata, logger
 from collimator.library import PID, PIDDiscrete
 from collimator.framework import Diagram, LeafSystem
@@ -197,6 +198,11 @@ def run_optimization(
             submodel = model_json.Model.from_json(f.read())
             from_model_json.register_reference_submodel(ref_id, submodel)
 
+    model_param_overrides = {
+        p.param_name: model_json.Parameter(value=p.initial)
+        for p in optim.design_parameters
+    }
+
     # HACK: see https://github.com/collimator-ai/collimator/pull/6348
     # NOTE: This is actually used by the AI chat integration.
     if optim.json_model_with_cost:
@@ -205,7 +211,10 @@ def run_optimization(
         with open(model, "r", encoding="utf-8") as f:
             model_dict = json.load(f)
 
-    sim_context = from_model_json.load_model(model_dict)
+    sim_context = from_model_json.load_model(
+        model_dict,
+        model_parameter_overrides=model_param_overrides,
+    )
     diagram = sim_context.diagram
 
     pid_blocks = (
@@ -272,6 +281,13 @@ def run_optimization(
     if metrics_output is not None:
         metrics_writer = MetricsWriter(metrics_output)
 
+    # FIXME (before merge): Should these come from optimization options?
+    # Also, should other options be passed here?
+    sim_options = SimulatorOptions(
+        max_checkpoints=sim_context.simulator_options.max_checkpoints,
+        max_major_step_length=sim_context.simulator_options.max_major_step_length,
+    )
+
     optimal_params, metrics = ui_jobs.jobs_router(
         optim.type,
         diagram,
@@ -289,6 +305,7 @@ def run_optimization(
         constraint_port_names=constraint_port_names,
         pid_blocks=pid_blocks,
         metrics_writer=metrics_writer,
+        sim_options=sim_options,
     )
 
     logger.info(

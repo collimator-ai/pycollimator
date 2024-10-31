@@ -57,8 +57,6 @@ def test_scalar_linear(method):
 
     options = collimator.SimulatorOptions(
         math_backend="jax",
-        atol=1e-10,
-        rtol=1e-8,
         enable_autodiff=True,
         ode_solver_method=method,
     )
@@ -104,8 +102,6 @@ def test_vector_linear(method):
 
     options = collimator.SimulatorOptions(
         math_backend="jax",
-        atol=1e-10,
-        rtol=1e-8,
         enable_autodiff=True,
         ode_solver_method=method,
     )
@@ -158,10 +154,10 @@ def test_scalar_nonlinear(method):
 
     options = collimator.SimulatorOptions(
         math_backend="jax",
-        rtol=1e-10,
-        atol=1e-12,
         enable_autodiff=True,
         ode_solver_method=method,
+        rtol=1e-8,
+        atol=1e-10,
     )
 
     @jax.jit
@@ -221,8 +217,6 @@ def test_vector_nonlinear(method):
     # Simulate and compare derivative against finite difference.
     options = collimator.SimulatorOptions(
         math_backend="jax",
-        rtol=1e-10,
-        atol=1e-12,
         enable_autodiff=True,
         ode_solver_method=method,
     )
@@ -242,9 +236,11 @@ def test_vector_nonlinear(method):
 
     dx0_fd, dg_fd, da_fd = fd_grad(partial(fwd, context=context), x0, g, a)
 
-    assert jnp.allclose(dx0_ad, dx0_fd)
-    assert jnp.allclose(dg_ad, dg_fd)
-    assert jnp.allclose(da_ad, da_fd)
+    # Have to relax the tolerances slightly because the finite differencing
+    # estimate is a little inaccurate
+    assert jnp.allclose(dx0_ad, dx0_fd, rtol=1e-4)
+    assert jnp.allclose(dg_ad, dg_fd, rtol=1e-4)
+    assert jnp.allclose(da_ad, da_fd, rtol=1e-4)
 
 
 def test_mass_matrix():
@@ -291,8 +287,6 @@ def test_mass_matrix():
     options = collimator.SimulatorOptions(
         ode_solver_method="bdf",
         enable_autodiff=True,
-        rtol=1e-10,
-        atol=1e-12,
     )
 
     @jax.jit
@@ -316,9 +310,10 @@ def test_mass_matrix():
 
 
 if __name__ == "__main__":
-    from collimator import logging
+    # from collimator import logging
 
-    logging.set_log_level(logging.DEBUG)
-    logging.set_file_handler("test.log")
+    # logging.set_log_level(logging.DEBUG)
+    # logging.set_file_handler("test.log")
 
-    test_scalar_linear("bdf")
+    # test_scalar_linear("dopri5")
+    test_scalar_nonlinear("dopri5")

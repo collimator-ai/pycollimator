@@ -31,6 +31,8 @@ __all__ = [
     "WhiteNoise",
 ]
 
+# TODO: Implement pure numpy version of RandomNumber and WhiteNoise
+
 
 class RandomNumber(LeafSystem):
     """Discrete-time random number generator.
@@ -124,7 +126,9 @@ class RandomNumber(LeafSystem):
 
         self.rng = partial(getattr(random, distribution), **distribution_parameters)
 
-        key = random.PRNGKey(np.random.randint(0, 2**32) if seed is None else seed)
+        key = random.PRNGKey(
+            np.random.randint(0, 2**32, dtype=np.int64) if seed is None else seed
+        )
 
         # The discrete state is a tuple of (key, val) pairs.  Because of the way that
         # JAX maintains RNG state, we need to keep track of the key as well as the
@@ -195,8 +199,8 @@ class WhiteNoise(LeafSystem):
         t_last: float = 0.0
 
     @parameters(
-        static=["num_samples", "shape", "seed"],
-        dynamic=["correlation_time", "noise_power"],
+        static=["num_samples", "shape", "seed", "noise_power"],
+        dynamic=["correlation_time"],
     )
     def __init__(
         self,
@@ -236,7 +240,9 @@ class WhiteNoise(LeafSystem):
 
         # The default state is a tuple of (key, samples) pairs.  The continuous-time
         # output signal is reconstructed from the samples using a sinc interpolation.
-        seed = np.random.randint(0, 2**32) if seed is None else int(seed)
+        seed = (
+            np.random.randint(0, 2**32, dtype=np.int64) if seed is None else int(seed)
+        )
         key = random.PRNGKey(int(seed))
         key, subkey = random.split(key)
         default_state = self.RNGState(

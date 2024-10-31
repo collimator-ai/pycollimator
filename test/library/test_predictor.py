@@ -18,13 +18,16 @@ Contains tests for:
 - TensorFlow
 """
 
-import pytest
-
 import os
+import sys
 
 import jax.numpy as jnp
+import pytest
 
 from collimator.library import PyTorch, TensorFlow
+
+# Prevent tests from running indefinitely. It should not happen.
+pytestmark = pytest.mark.timeout(20)
 
 
 @pytest.fixture(scope="class")
@@ -119,6 +122,10 @@ class TestPyTorch:
         ],
     )
     def test_torch_model_1_no_cast(self, manage_models, x, y, expected_result):
+        # FIXME: not sure what would be the right behavior here, even?
+        if sys.platform == "win32":
+            pytest.xfail(reason="On windows, pytorch defaults to int32")
+
         torch_model_1_filename = manage_models[0]
 
         predictor = PyTorch(
@@ -210,6 +217,10 @@ class TestPyTorch:
         ],
     )
     def test_torch_model_2_no_cast(self, manage_models, x, y, expected_result):
+        # FIXME: not sure what would be the right behavior here, even?
+        if sys.platform == "win32":
+            pytest.xfail(reason="On windows, pytorch defaults to int32")
+
         torch_model_2_filename = manage_models[1]
 
         predictor = PyTorch(
@@ -232,6 +243,8 @@ class TestPyTorch:
         assert jnp.allclose(result_1, x)
         assert result_1.dtype == expected_result.dtype
 
+
+class TestTensorFlow:
     @pytest.mark.parametrize(
         "x, y, dtype, expected_result",
         [

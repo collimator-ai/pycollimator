@@ -20,17 +20,17 @@ import json
 from typing import TYPE_CHECKING
 
 from ..backend import numpy_api as cnp
-from ..logging import logdata, logger
 
 from collimator.framework import LeafSystem, parameters
 from collimator.lazy_loader import LazyLoader
 
 from .utils import read_csv, extract_columns
 
-ps = LazyLoader("ps", globals(), "pysindy")
 if TYPE_CHECKING:
+    import pysindy as ps
     import sympy as sp
 else:
+    ps = LazyLoader("ps", globals(), "pysindy")
     sp = LazyLoader("sp", globals(), "sympy")
 
 
@@ -126,6 +126,8 @@ def train(
         x_dot_train = np.array(x_dot_train)
 
     time = np.array(time) if isinstance(time, cnp.ndarray) else time
+    if isinstance(time, np.ndarray) and time.ndim == 0:
+        time = time.item()
 
     model.fit(x_train, u=u_train, x_dot=x_dot_train, t=time, quiet=True)
 
@@ -417,8 +419,12 @@ class Sindy(LeafSystem):
             "equations",
             "discrete_time_update_interval",
             "pretrained_file_path",
+            "coefficients",
+            "base_feature_names",
+            "feature_names",
+            "has_control_input",
+            "initial_state",
         ],
-        dynamic=["initial_state"],
     )
     def __init__(
         self,
@@ -454,8 +460,6 @@ class Sindy(LeafSystem):
         **kwargs,
     ):
         super().__init__(**kwargs)
-
-        self._initcnt = 0
 
         _validate_leafsystem_inputs(
             pretrained,
@@ -600,23 +604,6 @@ class Sindy(LeafSystem):
             sympy_feature_expressions,
             modules=[custom_functions_dict, "jax"] if custom_functions_dict else "jax",
         )  # feature functions
-
-        self.declare_static_parameters(
-            base_feature_names=self.base_feature_names,
-            feature_names=self.feature_names,
-            coefficients=self.coefficients.tolist(),
-            has_control_input=self.has_control_input,
-        )
-
-    def initialize(self, **kwargs):
-        if self._initcnt == 1:
-            logger.warning(
-                "SINDy block does not support re-initialization yet, this means "
-                "that this block's parameter values will not change during ensemble "
-                "simulations or optimizations. Use SINDy fit method instead.",
-                **logdata(block=self),
-            )
-        self._initcnt += 1
 
     def _ode(self, _time, state, inputs, **_params):
         """

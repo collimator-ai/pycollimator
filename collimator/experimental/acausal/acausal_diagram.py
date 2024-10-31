@@ -11,6 +11,7 @@
 # <https://www.gnu.org/licenses/>.
 
 from collimator.experimental.acausal.component_library.base import SymKind
+from collimator.framework import build_recorder
 
 
 class AcausalDiagram:
@@ -33,9 +34,12 @@ class AcausalDiagram:
         # dict[sym:cmp] needed to dereference syms to their source compnent
         self.sym_to_cmp = {}
 
+        build_recorder.create_acausal_diagram()
+
     def connect(self, cmp_a, port_a, cmp_b, port_b):
         self.comps.update(set([cmp_a, cmp_b]))
         self.connections.append(((cmp_a, port_a), (cmp_b, port_b)))
+        build_recorder.connect_acausal_ports(cmp_a, port_a, cmp_b, port_b)
 
     def add_cmp_sympy_syms(self, cmp):
         if cmp not in self.sym_to_cmp.values():
@@ -52,7 +56,7 @@ class AcausalDiagram:
                     "Try giving the component a different name."
                 )
                 # this doesn't use AcausalModelError to avoid circular imports
-                raise ValueError(msg=msg)
+                raise ValueError(msg)
             self.syms_sp.update(cmp_syms_sp)
             for sym_ in list(cmp.syms):
                 self.sym_to_cmp[sym_] = cmp

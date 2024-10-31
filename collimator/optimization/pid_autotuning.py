@@ -195,11 +195,12 @@ class AutoTuner:
         pid_gains_upper_bounds=None,
         Ms=100.0,
         Mt=100.0,
-        add_filter=False,  # add measurement filter (currently not implemented)
+        add_filter=False,  # TODO: add measurement filter (currently not implemented)
         method="scipy-slsqp",
     ):
         if isinstance(plant, LTISystem):  # LTISystem includes TransferFunction
             linear_plant = plant
+            linear_plant.create_context()
         else:
             if x_op is None or u_op is None:
                 raise ValueError("Operating point x_op and u_op must be provided")
@@ -257,12 +258,8 @@ class AutoTuner:
     @partial(jax.jit, static_argnums=(0,))
     def objective(self, pid_params):
         kp, ki, kd = pid_params
-        C = jnp.array(
-            [[(ki * self.n), ((kp * self.n + ki) - (kp + kd * self.n) * self.n)]]
-        )
-        D = jnp.array([[(kp + kd * self.n)]])
         pid_subcontext = self.base_context[self.pid.system_id].with_parameters(
-            {"C": C, "D": D}
+            {"kp": kp, "ki": ki, "kd": kd}
         )
         context = self.base_context.with_subcontext(self.pid.system_id, pid_subcontext)
         sol = collimator.simulate(
@@ -466,9 +463,9 @@ class AutoTuner:
         Ps = ct.TransferFunction(plant_tf_num, plant_tf_den, name="Plant")
 
         # Plot Gang of Four transfer functions
+        fig1 = plt.figure()
         ct.gangof4_plot(Ps, Cs, omega=self.omega_grid)
 
-        fig1 = plt.gcf()
         axs = fig1.get_axes()
 
         axs[3].set_title(r"$T = \dfrac{PC}{1+PC}$")
@@ -499,6 +496,7 @@ class AutoTuner:
         axs[3].set_xlabel("Frequency (rad/sec)")
 
         fig1.tight_layout()
+        fig1.suptitle("Frequency domain response")
 
         # Plot Nyquist plot
         fig2 = plt.figure()
@@ -529,12 +527,8 @@ class AutoTuner:
 
     def plot_time_response(self, pid_params):
         kp, ki, kd = pid_params
-        C = jnp.array(
-            [[(ki * self.n), ((kp * self.n + ki) - (kp + kd * self.n) * self.n)]]
-        )
-        D = jnp.array([[(kp + kd * self.n)]])
         pid_subcontext = self.base_context[self.pid.system_id].with_parameters(
-            {"C": C, "D": D}
+            {"kp": kp, "ki": ki, "kd": kd}
         )
         context = self.base_context.with_subcontext(self.pid.system_id, pid_subcontext)
 
@@ -556,14 +550,18 @@ class AutoTuner:
 
         ax1.plot(sol.time, sol.outputs["plant"], label=r"plant: $y$")
         ax1.plot(sol.time, sol.outputs["ref"], label=r"reference: $y_r$")
-        ax2.plot(sol.time, sol.outputs["objective"], label=f"objective: {self.metric}")
+        ax2.plot(
+            sol.time,
+            sol.outputs["objective"] / self.sim_time,
+            label=f"objective: {self.metric}",
+        )
         ax3.plot(sol.time, sol.outputs["pid"], label=r"pid-control: $u$")
 
         ax3.set_xlabel("Time (s)")
         for ax in (ax1, ax2, ax3):
             ax.legend()
 
-        fig.suptitle("Time Response")
+        fig.suptitle("Time domain response")
         fig.tight_layout()
 
         print(

@@ -35,7 +35,7 @@ class NumpyResultsData(AbstractResultsData):
         context: ContextBase,
         recorded_signals: dict[str, SystemCallback],
         max_major_steps: int = None,
-        max_minor_steps_per_major_step: int = None,
+        max_checkpoints: int = None,
     ) -> NumpyResultsData:
         return NumpyResultsData(recorded_signals)
 

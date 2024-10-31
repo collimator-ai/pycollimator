@@ -29,7 +29,7 @@ import jax.numpy as jnp
 from jax import lax
 
 from collimator.backend.typing import Array
-from .ode_solver_impl import ODESolverImpl, ODESolverState
+from .ode_solver_impl import ODESolverImpl, ODESolverState, error_step_size_too_small
 
 if TYPE_CHECKING:
     from ...framework.state import StateComponent
@@ -38,20 +38,6 @@ __all__ = [
     "Dopri5State",
     "Dopri5Solver",
 ]
-
-
-def _raise_end_time_not_reached(tf, t):
-    if (tf - t) / tf > 1e-3:
-        raise RuntimeError(
-            f"ODE solver failed to reach specified end time. End time={tf}. "
-            f"Reached time={t}. This may also be an indication that the system is "
-            "diverging, or that the dynamics are very stiff."
-        )
-
-
-@jax.jit
-def error_ode_end_time_not_reached(tf, t):
-    jax.debug.callback(_raise_end_time_not_reached, tf, t)
 
 
 def interp_fit_dopri(y0, y1, k, dt):
@@ -285,6 +271,7 @@ class Dopri5Solver(ODESolverImpl):
         error_ratio = self.mean_error_ratio(next_y_error, y, next_y)
         new_interp_coeff = interp_fit_dopri(y, next_y, k, dt)
         dt = self.optimal_step_size(dt, error_ratio)
+        error_step_size_too_small(t, dt, boundary_time, self.enable_autodiff)
         return solver_state.update(
             error_ratio, next_y, next_f, next_t, dt, new_interp_coeff
         )

@@ -1,0 +1,235 @@
+{
+  "uuid": "1b51d03e-d4eb-4899-a4a5-6c9b84596959",
+  "name": "NoiseFromCovariance",
+  "diagram": {
+    "nodes": [
+      {
+        "uuid": "23c67746-c016-4507-a087-84fe348fddf0",
+        "name": "noise",
+        "type": "core.Outport",
+        "inputs": [
+          {
+            "name": "in_0",
+            "kind": "static"
+          }
+        ],
+        "outputs": [],
+        "parameters": {
+          "port_id": {
+            "value": "0"
+          },
+          "description": {
+            "value": "",
+            "is_string": true
+          }
+        },
+        "uiprops": {
+          "x": 120,
+          "y": -112
+        }
+      },
+      {
+        "uuid": "25b58893-d822-4eae-bef6-7b24dd13d617",
+        "name": "unit_noise",
+        "type": "core.WhiteNoise",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "out_0",
+            "kind": "static"
+          }
+        ],
+        "parameters": {
+          "seed": {
+            "value": "seed"
+          },
+          "dtype": {
+            "value": "float64",
+            "is_string": true
+          },
+          "shape": {
+            "value": "(cov.shape[0],)"
+          },
+          "noise_power": {
+            "value": "1.0"
+          },
+          "num_samples": {
+            "value": "10"
+          },
+          "correlation_time": {
+            "value": "1.0/fs"
+          }
+        },
+        "uiprops": {
+          "x": -136,
+          "y": -104,
+          "port_alignment": "spaced"
+        }
+      },
+      {
+        "uuid": "f12266be-f4c6-4908-89cf-f8511ba9e4bd",
+        "name": "chol_cov",
+        "type": "core.Constant",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "out_0",
+            "kind": "static"
+          }
+        ],
+        "parameters": {
+          "value": {
+            "value": "np.linalg.cholesky(cov)"
+          }
+        },
+        "uiprops": {
+          "x": -136,
+          "y": -136,
+          "grid_height": 2,
+          "grid_width": 9,
+          "port_alignment": "spaced"
+        }
+      },
+      {
+        "uuid": "00a11fe6-41f0-4dfe-9eac-8d3445ba0a40",
+        "name": "_noise_vec",
+        "type": "core.DotProduct",
+        "inputs": [
+          {
+            "name": "in_0",
+            "kind": "static"
+          },
+          {
+            "name": "in_1",
+            "kind": "static"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "out_0",
+            "kind": "static"
+          }
+        ],
+        "parameters": {},
+        "uiprops": {
+          "x": -8,
+          "y": -112,
+          "port_alignment": "spaced"
+        }
+      }
+    ],
+    "links": [
+      {
+        "uuid": "60e56a97-9c76-492b-9f32-1ba307d2ccfb",
+        "src": {
+          "node": "00a11fe6-41f0-4dfe-9eac-8d3445ba0a40",
+          "port": 0
+        },
+        "dst": {
+          "node": "23c67746-c016-4507-a087-84fe348fddf0",
+          "port": 0
+        },
+        "uiprops": {
+          "link_type": {
+            "connection_method": "direct_to_block"
+          },
+          "segments": [],
+          "hang_coord_end": {
+            "x": 200,
+            "y": -72
+          }
+        }
+      },
+      {
+        "uuid": "9ce969bb-af84-414c-8d52-4093deefb6ad",
+        "src": {
+          "node": "25b58893-d822-4eae-bef6-7b24dd13d617",
+          "port": 0
+        },
+        "dst": {
+          "node": "00a11fe6-41f0-4dfe-9eac-8d3445ba0a40",
+          "port": 1,
+          "port_side": "inputs"
+        },
+        "uiprops": {
+          "link_type": {
+            "connection_method": "direct_to_block"
+          },
+          "segments": [],
+          "hang_coord_end": {
+            "x": 56,
+            "y": -72
+          }
+        }
+      },
+      {
+        "uuid": "c334021c-43a3-496e-96fb-a805f92ce835",
+        "src": {
+          "node": "f12266be-f4c6-4908-89cf-f8511ba9e4bd",
+          "port": 0
+        },
+        "dst": {
+          "node": "00a11fe6-41f0-4dfe-9eac-8d3445ba0a40",
+          "port": 0,
+          "port_side": "inputs"
+        },
+        "uiprops": {
+          "link_type": {
+            "connection_method": "direct_to_block"
+          },
+          "segments": [],
+          "hang_coord_end": {
+            "x": 48,
+            "y": -96
+          }
+        }
+      }
+    ],
+    "annotations": [],
+    "uuid": "b68de4a8-4bc0-4abb-9af4-b9bdb889ea99"
+  },
+  "subdiagrams": {
+    "diagrams": {},
+    "references": {}
+  },
+  "submodel_configuration": {},
+  "parameter_definitions": [
+    {
+      "uuid": "985d6d6f-c7c3-4151-9706-aa6c8b5eef3c",
+      "name": "cov",
+      "default_value": "np.eye(2)",
+      "description": "Covariance (n,n)",
+      "uiprops": {
+        "description_height": "22px",
+        "default_value_height": "22px"
+      }
+    },
+    {
+      "uuid": "678a1292-de8f-4ec7-bfe6-c1c5cbde70e0",
+      "name": "fs",
+      "default_value": "100.0",
+      "description": "sampling frequency",
+      "uiprops": {
+        "description_height": "22px",
+        "default_value_height": "22px"
+      }
+    },
+    {
+      "uuid": "1cefed6e-8129-4968-90bb-a191e2724160",
+      "name": "seed",
+      "default_value": "42",
+      "description": "seed for Random Number Generator (RNG)",
+      "uiprops": {
+        "description_height": "22px",
+        "default_value_height": "22px"
+      }
+    }
+  ],
+  "state_machines": {},
+  "owner_uuid": "00000000-0000-0000-0000-000000000000",
+  "project_uuid": "700e7c9c-831e-4743-9e5f-bed17fe1cbc3",
+  "is_global": false,
+  "version": 2,
+  "schema_version": "4",
+  "kind": "Submodel"
+}

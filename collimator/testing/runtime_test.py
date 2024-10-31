@@ -94,10 +94,21 @@ def copy_to_workdir(test_paths, *globs, dirs_exist_ok=False):
             dst = pathlib.Path(src).relative_to(testdir)
             dst = os.path.join(workdir, dst)
             # @am. this was in the original. not sure if still needed
-            # if os.path.isdir(src):
-            #     shutil.copytree(src, dst, dirs_exist_ok=dirs_exist_ok)
-            # else:
-            shutil.copyfile(src, dst)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=dirs_exist_ok)
+            else:
+                shutil.copyfile(src, dst)
+
+
+def load_model(request, model_json, return_model=False):
+    test_paths = get_paths(request)
+    copy_to_workdir(test_paths, "*")
+    model = collimator.load_model(
+        test_paths["workdir"], model=model_json, logsdir=test_paths["logsdir"]
+    )
+    if return_model:
+        return test_paths, model
+    return test_paths
 
 
 def run(
@@ -118,7 +129,9 @@ def run(
         # run(), so that the test script could place some files in the workdir
         pass
 
-    testdir = test_paths["testdir"]
+    copy_to_workdir(test_paths, "*")
+
+    # testdir = test_paths["testdir"]
     workdir = test_paths["workdir"]
     npydir = test_paths["npydir"]
     logsdir = test_paths["logsdir"]
@@ -130,7 +143,7 @@ def run(
     try:
         os.chdir(workdir)
         model = collimator.load_model(
-            modeldir=testdir, model=model_json, logsdir=logsdir, npydir=npydir
+            modeldir=str(workdir), model=model_json, logsdir=logsdir, npydir=npydir
         )
 
         if check_only:

@@ -26,8 +26,10 @@ import collimator
 from collimator import library as lib
 
 import collimator.logging as logging
+from collimator.testing.markers import skip_if_not_jax
 
 logging.set_log_level(logging.DEBUG)
+skip_if_not_jax()
 
 
 def test_basic_RC(show_plot=False):
@@ -719,7 +721,9 @@ def test_simple_circuit_act2(show_plot=False):
     run_circuit_act(ev, ad, show_plot=show_plot)
 
 
-@pytest.mark.xfail(reason="not clear how diagram processing should handle this.")
+@pytest.mark.skip(
+    reason="not clear how diagram processing should handle this. see wc-389"
+)
 def test_simple_circuit_act3(show_plot=False):
     # see commnent in act1 test
     ev = EqnEnv()
@@ -728,7 +732,7 @@ def test_simple_circuit_act3(show_plot=False):
 
 
 def make_lc_oscillator(ev):
-    ad = AcausalDiagram()
+    ad = AcausalDiagram(name="lc")
     c1 = elec.Capacitor(
         ev,
         name="c1",
@@ -750,7 +754,7 @@ def make_lc_oscillator(ev):
 
 
 def make_lc_oscillator_damped(ev):
-    ad = AcausalDiagram()
+    ad = AcausalDiagram(name="lrc")
     c1 = elec.Capacitor(
         ev,
         name="c1",
@@ -785,6 +789,7 @@ def test_lc_oscillator(show_plot=False):
 
     lcr_ad = make_lc_oscillator_damped(ev)
     lcr_ac = AcausalCompiler(ev, lcr_ad, verbose=True)
+    # lcr_ac.diagram_processing()
     lcr_sys = lcr_ac(name="lcr")
     lcr_sys = builder.add(lcr_sys)
 
@@ -1168,14 +1173,20 @@ def test_battery_pulse(show_plot=False):
     assert np.all(sensV[charge_idx] >= ocv[charge_idx])
 
 
-def test_bldc(show_plot=False):
+def test_integrated_motor(show_plot=False, use_batt=False):
     # voltage_source-motor
     # motor-heat_capacitor
     ev = EqnEnv()
     ad = AcausalDiagram()
-    mot = elec.BLDC(ev, enable_heat_port=True)
+    mot = elec.IntegratedMotor(ev, enable_heat_port=True)
     volts = 500
-    v = elec.VoltageSource(ev, name="v1", v=volts, enable_voltage_port=False)
+    if use_batt:
+        v = elec.Battery(
+            ev, name="batt", OCV_volts=[volts * 0.8, volts], initial_soc_fixed=True
+        )
+    else:
+        v = elec.VoltageSource(ev, name="v1", v=volts, enable_voltage_port=False)
+
     gnd = elec.Ground(ev, name="gnd")
     hc = ht.HeatCapacitor(
         ev,
@@ -1249,7 +1260,7 @@ def test_bldc(show_plot=False):
 
     current_file_path = os.path.abspath(__file__)
     current_directory = os.path.dirname(current_file_path)
-    file_name = "bldc_pass_conditions.npz"
+    file_name = "integrated_motor_pass_conditions.npz"
     file_path = os.path.join(current_directory, file_name)
     sols = np.load(file_path)
 
@@ -1258,22 +1269,23 @@ def test_bldc(show_plot=False):
     rotTrq_sol = sols["rotTrq"]
     I_sol = sols["I"]
     eff_sol = sols["eff"]
+
     if show_plot:
         fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(8, 12))
-        ax1.plot(t_sol, rotSpd_sol, label="rotSpd_sol")
+        ax1.plot(t_sol, rotSpd_sol, label="rotSpd_sol", linewidth=2)
         ax1.plot(t, rotSpd, label="rotSpd")
         ax1.legend()
         ax1.grid()
-        ax2.plot(t, temp, label="temp")
-        ax2.plot(t_sol, rotTrq_sol, label="rotTrq_sol")
+        ax2.plot(t_sol, rotTrq_sol, label="rotTrq_sol", linewidth=2)
         ax2.plot(t, rotTrq, label="rotTrq")
+        ax2.plot(t, temp, label="temp")
         ax2.legend()
         ax2.grid()
-        ax3.plot(t_sol, I_sol, label="I_sol")
+        ax3.plot(t_sol, I_sol, label="I_sol", linewidth=2)
         ax3.plot(t, I, label="I")
         ax3.legend()
         ax3.grid()
-        ax4.plot(t_sol, eff_sol, label="eff_sol")
+        ax4.plot(t_sol, eff_sol, label="eff_sol", linewidth=2)
         ax4.plot(t, eff, label="eff")
         ax4.legend()
         ax4.grid()
@@ -1300,18 +1312,18 @@ def test_bldc(show_plot=False):
     # )
 
 
-def test_ideal_diode(show_plot=False, ideal=False, run_sim=False):
+# @pytest.mark.parametrize("ideal", [False, True])
+def test_ideal_diode(ideal=True, show_plot=False):
+    # NOTE: Schockley Diode not woring correctly, so no released in UI, and not tested in CI.
     ev = EqnEnv()
     ad = AcausalDiagram()
-    v1 = elec.VoltageSource(ev, name="v1", enable_voltage_port=True, v=-5.0)
+    v1 = elec.VoltageSource(ev, name="v1", enable_voltage_port=True)
     r1 = elec.Resistor(ev, name="r1", R=1)
     c1 = elec.Capacitor(ev, name="c1", initial_voltage=0.0, initial_voltage_fixed=True)
     if ideal:
-        d1 = elec.IdealDiode(ev, name="d1", Ron=0.01, Roff=100.0)
+        d1 = elec.IdealDiode(ev, name="d1")
     else:
         d1 = elec.Diode(ev, name="d1")
-    # use a resistor in place of the diode to test the rest of the circuit.
-    # d1 = elec.Resistor(ev, name="d1", R=1.0)
     sensI = elec.CurrentSensor(ev, name="sensI")
     sensV = elec.VoltageSensor(ev, name="sensV")
     capV = elec.VoltageSensor(ev, name="capV")
@@ -1343,56 +1355,72 @@ def test_ideal_diode(show_plot=False, ideal=False, run_sim=False):
     ac = AcausalCompiler(ev, ad, verbose=True)
     asys = ac()
 
-    if run_sim:
-        # FIXME: see FIXME in IdealDiode and Diode classes.
-        # make wildcat diagram
-        builder = collimator.DiagramBuilder()
-        asys = builder.add(asys)
-        vin = builder.add(lib.Sine(frequency=10.0, amplitude=10.0))
-        builder.connect(vin.output_ports[0], asys.input_ports[0])
+    builder = collimator.DiagramBuilder()
+    asys = builder.add(asys)
+    vin = builder.add(lib.Sine(frequency=10.0, amplitude=10.0))
+    builder.connect(vin.output_ports[0], asys.input_ports[0])
 
-        # 'compile' wildcat diagram
-        diagram = builder.build()
-        context = diagram.create_context(check_types=True)
+    # 'compile' wildcat diagram
+    diagram = builder.build()
+    context = diagram.create_context(check_types=True)
 
-        # run the simulation
-        I_idx = asys.outsym_to_portid[sensI.get_sym_by_port_name("i")]
-        V_idx = asys.outsym_to_portid[sensV.get_sym_by_port_name("v")]
-        capV_idx = asys.outsym_to_portid[capV.get_sym_by_port_name("v")]
-        rcV_idx = asys.outsym_to_portid[rcV.get_sym_by_port_name("v")]
-        allV_idx = asys.outsym_to_portid[allV.get_sym_by_port_name("v")]
-        recorded_signals = {
-            "I": asys.output_ports[I_idx],
-            "V": asys.output_ports[V_idx],
-            "capV": asys.output_ports[capV_idx],
-            "rcV": asys.output_ports[rcV_idx],
-            "allV": asys.output_ports[allV_idx],
-        }
-        results = collimator.simulate(
-            diagram,
-            context,
-            (0.0, 10.0),
-            recorded_signals=recorded_signals,
-        )
-        t = results.time
-        I_ = results.outputs["I"]
-        V_ = results.outputs["V"]
-        capV_ = results.outputs["capV"]
-        rcV = results.outputs["rcV"]
-        allV = results.outputs["allV"]
+    # run the simulation
+    I_idx = asys.outsym_to_portid[sensI.get_sym_by_port_name("i")]
+    V_idx = asys.outsym_to_portid[sensV.get_sym_by_port_name("v")]
+    capV_idx = asys.outsym_to_portid[capV.get_sym_by_port_name("v")]
+    rcV_idx = asys.outsym_to_portid[rcV.get_sym_by_port_name("v")]
+    allV_idx = asys.outsym_to_portid[allV.get_sym_by_port_name("v")]
+    recorded_signals = {
+        "I": asys.output_ports[I_idx],
+        "V": asys.output_ports[V_idx],
+        "capV": asys.output_ports[capV_idx],
+        "rcV": asys.output_ports[rcV_idx],
+        "allV": asys.output_ports[allV_idx],
+    }
+    results = collimator.simulate(
+        diagram,
+        context,
+        (0.0, 10.0),
+        recorded_signals=recorded_signals,
+    )
+    t = results.time
+    I_ = results.outputs["I"]
+    V_ = results.outputs["V"]
+    capV_ = results.outputs["capV"]
+    rcV = results.outputs["rcV"]
+    allV = results.outputs["allV"]
 
-        if show_plot:
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6))
-            ax1.plot(t, I_, label="current")
-            ax1.legend()
-            ax1.grid()
-            ax2.plot(t, V_, label="voltage across diode", marker="o")
-            ax2.plot(t, capV_, label="voltage across capacitor")
-            ax2.plot(t, rcV, label="voltage across resistor+capacitor")
-            ax2.plot(t, allV, label="voltage across D+R+C")
-            ax2.legend()
-            ax2.grid()
-            plt.show()
+    current_file_path = os.path.abspath(__file__)
+    current_directory = os.path.dirname(current_file_path)
+    if ideal:
+        file_name = "ideal_diode_pass_conditions.npz"
+    else:
+        file_name = "shockley_diode_pass_conditions.npz"
+    file_path = os.path.join(current_directory, file_name)
+    sols = np.load(file_path)
+    # np.savez(file_path, t=t, current=I_) # NOTE: use to update pass conditions
+
+    t_sol = sols["t"]
+    I_sol = sols["current"]
+    I_sol = np.interp(t, t_sol, I_sol)
+
+    if show_plot:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6))
+        ax1.plot(t, I_, label="current")
+        ax1.plot(t_sol, I_sol, label="current sol")
+        # ax1.plot(t, I_sol - I_, label="current sol")
+        ax1.legend()
+        ax1.grid()
+        ax2.plot(t, V_, label="voltage across diode", marker="o")
+        ax2.plot(t, capV_, label="voltage across capacitor")
+        ax2.plot(t, rcV, label="voltage across resistor+capacitor")
+        ax2.plot(t, allV, label="voltage across D+R+C")
+        ax2.legend()
+        ax2.grid()
+        plt.show()
+
+    I_rsme = np.mean((I_ - I_sol) ** 2)
+    assert I_rsme <= 1e-4
 
 
 if __name__ == "__main__":
@@ -1407,10 +1435,10 @@ if __name__ == "__main__":
     # test_simple_circuit_act1(show_plot=True)
     # test_simple_circuit_act2(show_plot=False)
     # test_simple_circuit_act3(show_plot=True)
-    # test_lc_oscillator(show_plot=True)
+    test_lc_oscillator(show_plot=True)
     # test_ideal_motor(show_plot=show_plot)
     # test_ideal_motor_with_circuit(show_plot=True)
     # test_elec_resistor_thermal_port(show_plot=show_plot)
-    test_battery_pulse(show_plot=True)
-    # test_bldc(show_plot=show_plot)
-    # test_ideal_diode(show_plot=show_plot)
+    # test_battery_pulse(show_plot=True)
+    # test_integrated_motor(show_plot=True)
+    # test_ideal_diode(show_plot=True, ideal=False)

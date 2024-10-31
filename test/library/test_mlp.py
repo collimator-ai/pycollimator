@@ -14,11 +14,13 @@ import jax
 import jax.numpy as jnp
 import os
 import pathlib
+import pytest
 import shutil
+
 import equinox as eqx
 import collimator
 from collimator.library import Constant, MLP
-import pytest
+from collimator.testing import requires_jax
 
 
 @pytest.mark.parametrize(
@@ -99,6 +101,7 @@ def test_mlp_static():
     assert jnp.allclose(results.outputs["mlp.y"], diagram["mlp"].mlp(val))
 
 
+@requires_jax()
 def test_mlp_serialize():
     collimator.set_backend("jax")
     builder = collimator.DiagramBuilder()
@@ -121,9 +124,10 @@ def test_mlp_serialize():
         shutil.rmtree(workdir_path)
     os.makedirs(workdir_path, mode=0o777, exist_ok=True)
 
-    # test whole model serialization
     file_name = os.path.join(workdir, "test_mlp_serialize.eqx")
     mlp.serialize(file_name)
+
+    # test whole model serialization
     mlp2 = builder.add(MLP(**mlp_config, file_name=file_name, name="mlp2"))
 
     builder.connect(constant.output_ports[0], mlp.input_ports[0])

@@ -12,8 +12,9 @@
 
 # https://www.firedrakeproject.org/_modules/firedrake/logging.html
 import logging
-import time
 from logging import CRITICAL, DEBUG, ERROR, INFO, WARNING
+import os
+import time
 
 BOLD = "\033[1m"
 RED = "\033[31m"
@@ -57,18 +58,23 @@ class ColorFormatter(logging.Formatter):
         extras: dict | None = record.__dict__.get("extras")
         color = self._level_color(record.levelno)
 
-        ftime = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.created))
-        s = f"{ftime}.{(1000*record.created)%1000:.0f} - {BOLD}[{record.name}][{color}{record.levelname}{RESET}]: {record.getMessage()}{RESET}"
+        ftime = time.strftime("%H:%M:%S", time.localtime(record.created))
+        s = f"{ftime}.{(1000*record.created)%1000:03.0f} - {BOLD}[{record.name}][{color}{record.levelname}{RESET}]: {record.getMessage()}{RESET}"
 
         if extras:
+            err: dict = extras.pop("__error__", None)
+            if err is not None:
+                s += f" {BOLD}{RED}at: {err.get('name_path')}{RESET}"
             s += " " + " ".join(f"{LIGHTGREY}{k}{RESET}={v}" for k, v in extras.items())
 
         return s
 
 
-__fmt = "%(name)s:%(levelname)s %(message)s"
-__formatter = logging.Formatter(fmt=__fmt)
-# __formatter = ColorFormatter()
+if os.environ.get("LOG_COLOR", "1") == "0":
+    __FMT = "%(name)s:%(levelname)s %(message)s"
+    __formatter = logging.Formatter(fmt=__FMT)
+else:
+    __formatter = ColorFormatter()
 __stream_handler = logging.StreamHandler()
 __stream_handler.setFormatter(__formatter)
 
@@ -135,7 +141,7 @@ def _block_info(block) -> dict:
 
     name_path = block.name_path_str
     uuid_path = block.ui_id_path
-    if not name_path or not uuid_path:
+    if not name_path:
         return {}
 
     return {
@@ -147,7 +153,7 @@ def _block_info(block) -> dict:
     }
 
 
-def logdata(*, block=None, **kwargs):
+def logdata(*, block=None, detail=None, **kwargs):
     """Use this in log.info() and other logging functions to include block info:
 
     log.info("message", **logdata(block=self))
@@ -158,6 +164,8 @@ def logdata(*, block=None, **kwargs):
     extras = kwargs or {}
     if block is not None:
         extras.update(_block_info(block))
+    if detail is not None:
+        extras["__detail__"] = str(detail)
 
     if len(extras) == 0:
         return {}

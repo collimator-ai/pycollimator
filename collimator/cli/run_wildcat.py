@@ -31,7 +31,7 @@ import collimator
 import collimator.logging as wildcat_logger
 from collimator import Simulator
 from collimator.cli.run_optimization import run_optimization
-from collimator.backend import numpy_api as cnp
+from collimator.backend import numpy_api as cnp, DEFAULT_BACKEND
 from collimator.framework import build_recorder
 from collimator.framework.error import CollimatorError
 import collimator.dashboard.serialization.ui_types as ts
@@ -59,7 +59,7 @@ def set_cwd(path):
         None
     """
 
-    origin = os.path.abspath(path)
+    origin = os.getcwd()
     try:
         os.chdir(path)
         yield
@@ -144,45 +144,35 @@ def uses_model_parameters(python_code: str, model_params: set[str]):
     return False
 
 
-def run_batch_simulation(
-    parameters: list[dict[str, Any]], default_parameters: dict[str, Any] = None
-):
+def run_batch_simulation(parameters: list[dict[str, Any]]):
     logger.info("Running batch simulation with parameters: %s", parameters)
 
-    model_parameters_json = {}
-    if default_parameters:
-        model_parameters_json = {
-            k: model_json.Parameter(value=str(v), is_string=False)
-            for k, v in default_parameters.items()
-        }
-    model_parameters_json.update(
-        {
-            k: model_json.Parameter(value=str(v), is_string=False)
-            for k, v in parameters[0].items()
-        }
-    )
+    model_parameters_json = {
+        k: model_json.Parameter(value=str(v), is_string=False)
+        for k, v in parameters[0].items()
+    }
     sim_context = collimator.load_model_from_dir(
         modeldir=".", model="model.json", parameter_overrides=model_parameters_json
     )
 
     # If there is an init_script, check if model parameters are used in it and
-    # raise an error
+    # raise an error.
+    # If model parameters are used in init_script an update requires re-parsing
+    # the script which could require a recompilation of the diagram which we
+    # don't support.
     if sim_context.init_script:
-        # FIXME: it's possible to detect model parameters used in the script but
-        # the script will still overwrite them since we indiscriminately pass
-        # all model parameters to it, they will end up in the init script namespace
-        # as resolved parameters
+        with open(sim_context.init_script) as init_script_file:
+            py_code = init_script_file.read()
 
-        # with open(sim_context.init_script) as init_script_file:
-        #     py_code = init_script_file.read()
-
-        # if uses_model_parameters(py_code, set(model_parameters_json.keys())):
-        #     raise ValueError(
-        #         "Can't use model parameters in init scripts in ensemble simulations."
-        #     )
-        raise ValueError("Ensemble simulations do not support init scripts.")
+        if uses_model_parameters(py_code, set(model_parameters_json.keys())):
+            raise ValueError(
+                "Ensemble simulations do not support using model parameters in init scripts."
+            )
 
     diagram = sim_context.diagram
+
+    # FIXME: for ensemble sims, we only need to record those signals that we plot. Other
+    # signals don't need to be recorded.
     recorded_signals = sim_context.recorded_signals
 
     sim_context.simulator_options.recorded_signals = recorded_signals
@@ -202,7 +192,7 @@ def run_batch_simulation(
         for param_name in param_keys:
             static_dependents = sim_context.model_parameters[
                 param_name
-            ].static_dependents()
+            ].static_dependents
             if static_dependents:
                 system_names = [dep.system.name for dep in static_dependents]
                 system_names = ", ".join(system_names)
@@ -212,24 +202,33 @@ def run_batch_simulation(
                 )
         advance_to = jax.jit(advance_to)
 
-    def _run_sim(config):
-        for k, v in zip(param_keys, config):
-            diagram.parameters[k].set(v)
+    context = diagram.create_context(
+        time=sim_context.start_time,
+        check_types=True,
+    )
 
-        context = diagram.create_context()
-
-        # output ports may have changed
-        for port_path, port in recorded_signals.items():
-            recorded_signals[port_path] = port.system.output_ports[port.index]
-
-        results = advance_to(sim_context.stop_time, context)
-        return results.results_data
-
-    configs = [[v for v in config.values()] for config in parameters]
+    # FIXME: show ensemble sim logs DASH-1738
+    # FIXME: detect when dynamic parameters are used outside of a cache callback
+    # (in initialize() for example) it should invalidate the ensemble sim because
+    # of potential changes in the diagram that require a recompilation.
+    # we can't do much here today:
+    # 1. Too many blocks abuse configure_output_port() when they
+    #    should not
+    # 2. Recompilation is expensive, but could be achieved with:
+    #       simulator = Simulator(diagram, options=...)
+    #       advance_to = jax.jit(simulator.advance_to)
+    #    This would absolutely kill the performance of ensemble sims.
+    #    Properly declaring and using static parameters is the way to go.
+    # Luckily many port reconfigurations end up being functionally
+    # equivalent, so most ensemble sims kinda just work even with JAX.
 
     results = []
-    for config in configs:
-        result = _run_sim(config)
+    for i, config in enumerate(parameters):
+        context = context.with_parameters(config)
+        context = context.with_new_state()
+
+        result = advance_to(sim_context.stop_time, context)
+        result = result.results_data
         t, outputs = result.finalize()
         outputs["time"] = t
         results.append(outputs)
@@ -284,13 +283,14 @@ def run_simulation(parameters: dict[str, dict] = None) -> dict[str, jnp.ndarray]
 
 
 def run_validation(parameters: dict[str, dict] = None):
-    collimator.load_model(
+    model = collimator.load_model(
         "./",
         model="model.json",
         logsdir="logs",
-        npydir="npy",
         parameter_overrides=parameters,
+        check=False,
     )
+    model.check(write_signals_json=True)
 
 
 def generate_code(parameters: dict[str, dict] = None):
@@ -299,10 +299,13 @@ def generate_code(parameters: dict[str, dict] = None):
         "./",
         model="model.json",
         logsdir="logs",
-        npydir="npy",
         parameter_overrides=parameters,
+        check=False,
     )
-    return build_recorder.generate_code()
+    build_recorder.pause()
+    code = build_recorder.generate_code()
+    build_recorder.stop()
+    return code
 
 
 def _get_collimator_error(e: Exception) -> CollimatorError:
@@ -341,6 +344,10 @@ def run_wildcat(
     wildcat_logger.unset_stream_handler()
     logs_filepath = os.path.join(work_dir, "logs", "logs.txt")
     wildcat_logger.set_file_handler(logs_filepath, formatter=JsonFormatter())
+
+    # Reset math backend to the default otherwise 'auto' may resolve to numpy
+    # (instead of JAX) following a previous run with numpy in the same process.
+    cnp.set_backend(DEFAULT_BACKEND)
 
     with set_cwd(work_dir):
         t0 = time.perf_counter()
@@ -437,9 +444,15 @@ def main():
             with open(args.kwargs, "rb") as f:
                 pickled_kwargs = pickle.load(f)
 
-    results = run_wildcat(
-        args.work_dir, args.task_type, log_level=args.log_level, **pickled_kwargs
-    )
+    results = None
+    try:
+        results = run_wildcat(
+            args.work_dir, args.task_type, log_level=args.log_level, **pickled_kwargs
+        )
+    except WildcatApplicationError as e:
+        with open(f"{args.work_dir}/results.json", "w") as f:
+            json.dump({"user_msg": e.user_msg, "internal_msg": e.internal_msg}, f)
+        raise
 
     # This is useful mostly for local debugging via manual calls to run_wildcat
     if args.output_json:

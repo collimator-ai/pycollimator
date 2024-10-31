@@ -174,7 +174,7 @@ class OptimalParameterJson(JsonSchemaMixin, ToApiMixin):
                 return ex
             return str(v)
 
-        # Used by PID tuning
+        # Used by PID tuning and parameter estimation
         if hasattr(value, "system") and isinstance(value.system, SystemBase):
             return cls(
                 param_name=name.split(".")[-1],  # drops block path

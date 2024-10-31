@@ -18,6 +18,7 @@ from scipy.integrate import solve_ivp
 import collimator
 from collimator.models import EulerRigidBody, ArenstorfOrbit, Lorenz, Pleiades
 from collimator.backend import ODESolver, numpy_api as cnp
+from collimator.testing import set_backend
 
 pytestmark = pytest.mark.minimal
 
@@ -26,7 +27,7 @@ ODE_SOLVERS = ["RK45", "BDF"]
 
 class TestHairerSystems:
     def _run_ode_test(self, system, t_span, method, rtol, atol):
-        cnp.set_backend("jax")
+        set_backend("jax")
         context = system.create_context()
         recorded_signals = {"x": system.output_ports[0]}
         options = collimator.SimulatorOptions(
@@ -48,7 +49,7 @@ class TestHairerSystems:
         # Since we can't directly match time stamps using the `simulate` interface,
         # instead call the SciPy solve with results interpolated at the specified points
 
-        cnp.set_backend("numpy")
+        set_backend("numpy")
         context = system.create_context()
         scipy_solver = ODESolver(system)
         scipy_solver.initialize(context)
@@ -129,8 +130,31 @@ class TestHairerSystems:
             plt.show()
 
 
+class DivergingODE(collimator.LeafSystem):
+    def __init__(self, name="DivergingODE"):
+        super().__init__(name=name)
+        self.declare_continuous_state(default_value=1.0, ode=self.ode)
+
+    def ode(self, t, state):
+        x = state.continuous_state
+        return cnp.exp(x)
+
+
+@pytest.mark.parametrize("method", ODE_SOLVERS)
+def test_diverging_solution(method):
+    set_backend("jax")
+    system = DivergingODE()  # Blows up in finite time near t=e.
+    context = system.create_context()
+    t_span = (0.0, 0.5)
+    options = collimator.SimulatorOptions(ode_solver_method=method)
+    with pytest.raises(RuntimeError):
+        collimator.simulate(system, context, t_span, options=options)
+
+
 if __name__ == "__main__":
-    TestHairerSystems().test_euler("rk45", show_plot=True)
+    # TestHairerSystems().test_euler("rk45", show_plot=True)
     # TestHairerSystems().test_arenstorf(show_plot=True)
     # TestHairerSystems().test_lorenz(show_plot=True)
     # TestHairerSystems().test_pleiades(show_plot=True)
+    # test_diverging_solution("RK45")
+    test_diverging_solution("BDF")

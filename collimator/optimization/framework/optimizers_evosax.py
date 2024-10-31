@@ -133,7 +133,9 @@ class Evosax(Optimizer):
                 imax = jnp.full(self.num_dims, self.optimizable.params_0_flat * factor)
                 self.es_params = self.es_params.replace(init_min=imin, init_max=imax)
 
-        self.key = jr.PRNGKey(np.random.randint(0, 2**32) if seed is None else seed)
+        self.key = jr.PRNGKey(
+            np.random.randint(0, 2**32, dtype=np.int64) if seed is None else seed
+        )
 
     def optimize(self):
         """Run optimization"""

@@ -13,13 +13,14 @@
 
 import pytest
 import collimator.testing as test
+from collimator.testing.markers import skip_if_not_jax
 
+skip_if_not_jax()
 pytestmark = pytest.mark.app
 
 
-def test_KalmanFilter(request):
+def test_InfiniteHorizonKalmanFilter(request):
     test_paths = test.get_paths(request)
-    test.copy_to_workdir(test_paths, "kf_init.py")
     test.run(
         test_paths=test_paths, pytest_request=request, stop_time=1.0, check_only=True
     )

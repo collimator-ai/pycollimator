@@ -114,6 +114,22 @@ def put(*args, **kwargs):
     return call(*args, **kwargs, method="PUT")
 
 
+def _del_none(d):
+    """
+    Delete keys with the value `None` in a dictionary, recursively.
+    """
+    for key, value in list(d.items()):
+        if value is None:
+            del d[key]
+        elif isinstance(value, dict):
+            _del_none(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _del_none(item)
+    return d
+
+
 def call(
     api,
     method,
@@ -138,6 +154,10 @@ def call(
         body = body.to_dict()
     else:
         body = _convert_dataclasses_to_dict(body)
+
+    if body is not None:
+        _del_none(body)
+
     timeout = (5, 30)
     try:
         if body is None:

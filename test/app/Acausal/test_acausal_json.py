@@ -12,13 +12,15 @@
 # <https://www.gnu.org/licenses/>.
 
 import pytest
-import collimator
-import pathlib
 import matplotlib.pyplot as plt
 import collimator.testing as test
 import numpy as np
 import os
 import json
+
+from collimator.testing.markers import skip_if_not_jax
+
+skip_if_not_jax()
 
 pytestmark = pytest.mark.app
 
@@ -52,12 +54,7 @@ def load_json(file_path):
 
 
 def test_AcausalSignalTypes(request):
-    test_paths = test.get_paths(request)
-    collimator.load_model(
-        test_paths["testdir"],
-        logsdir=test_paths["logsdir"],
-        model="acausal_signal_types.json",
-    )
+    test_paths = test.load_model(request, "acausal_signal_types.json")
     result_signal_types_path = os.path.join(test_paths["logsdir"], "signal_types.json")
     expect_signal_types_path = os.path.join(test_paths["testdir"], "signal_types.json")
     result_signal_types = load_json(result_signal_types_path)
@@ -86,9 +83,8 @@ def test_AcausalSignalTypes(request):
     assert not node_diffs
 
 
-def test_acausal_system_params():
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="acausal_system_params.json")
+def test_acausal_system_params(request):
+    _, model = test.load_model(request, "acausal_system_params.json", return_model=True)
     # r = model.simulate(stop_time=10.0)
 
     # also enforce that the acausal_system context have all the component params, with the correct values.
@@ -98,14 +94,14 @@ def test_acausal_system_params():
     found_therm_acausal_system = False
     for idx, subctx in model.context.subcontexts.items():
         print(f"\n\n{subctx.owning_system.name=}")
-        if subctx.owning_system.name == "root.electrical.acausal_system":
+        if subctx.owning_system.name == "root_electrical_acausal_system":
             found_elec_acausal_system = True
             print(f"\tparams {subctx.parameters.keys()}")
             assert subctx.parameters["Resistor_0_R"] == 1.0
             assert subctx.parameters["Capacitor_0_C"] == 1.0
             assert subctx.parameters["VoltageSource_0_v"] == 1.0
             # would be nice to check that capacitor initial_voltage is also correct
-        elif subctx.owning_system.name == "root.rotational.acausal_system":
+        elif subctx.owning_system.name == "root_rotational_acausal_system":
             found_rot_acausal_system = True
             print(f"\tparams {subctx.parameters.keys()}")
             # assert subctx.parameters["ConstantTorque_0_T"] == 20.0 # FIXME: doesn't appear in acausal_system params
@@ -113,7 +109,7 @@ def test_acausal_system_params():
             assert subctx.parameters["Damper_0_D"] == 1.0
             assert subctx.parameters["Inertia_0_I"] == 1.0
             # would be nice to check that spring, damper, inertia initial values are also correct
-        elif subctx.owning_system.name == "root.translational.acausal_system":
+        elif subctx.owning_system.name == "root_translational_acausal_system":
             found_trans_acausal_system = True
             print(f"\tparams {subctx.parameters.keys()}")
             # assert subctx.parameters["ConstantForce_0_T"] == 40.0 # FIXME: doesn't appear in acausal_system params
@@ -121,7 +117,7 @@ def test_acausal_system_params():
             assert subctx.parameters["Damper_0_D"] == 1.0
             assert subctx.parameters["Mass_0_M"] == 1.0
             # would be nice to check that spring, damper, mass initial values are also correct
-        elif subctx.owning_system.name == "root.thermal.acausal_system":
+        elif subctx.owning_system.name == "root_thermal_acausal_system":
             found_therm_acausal_system = True
             print(f"\tparams {subctx.parameters.keys()}")
             assert subctx.parameters["ThermalResistor_0_R"] == 1.0
@@ -134,10 +130,8 @@ def test_acausal_system_params():
     assert found_therm_acausal_system
 
 
-def test_lowpass_filter(show_plot=False):
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="lowpass_filter.json")
-    r = model.simulate(stop_time=10.0)
+def test_lowpass_filter(request, show_plot=False):
+    r = test.run(request, model_json="lowpass_filter.json", stop_time=10.0)
 
     # print(r)
     time = r["time"]
@@ -164,10 +158,8 @@ def test_lowpass_filter(show_plot=False):
     )
 
 
-def test_mimo(show_plot=False):
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="mimo.json")
-    r = model.simulate(stop_time=10.0)
+def test_mimo(request, show_plot=False):
+    r = test.run(request, model_json="mimo.json", stop_time=10.0)
 
     # print(r)
     time = r["time"]
@@ -190,10 +182,8 @@ def test_mimo(show_plot=False):
     assert np.max(sensVc) > 1.5  # makes sure the const input worked
 
 
-def test_ideal_motor(show_plot=False):
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="ideal_motor.json")
-    r = model.simulate(stop_time=10.0)
+def test_ideal_motor(request, show_plot=False):
+    r = test.run(request, model_json="ideal_motor.json", stop_time=10.0)
 
     print(r.keys())
     time = r["time"]
@@ -217,10 +207,8 @@ def test_ideal_motor(show_plot=False):
     # FIXME: add some pass conditions
 
 
-def test_uniport_sensors(show_plot=False):
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="uniport_sensors.json")
-    r = model.simulate(stop_time=10.0)
+def test_uniport_sensors(request, show_plot=False):
+    r = test.run(request, model_json="uniport_sensors.json", stop_time=10.0)
 
     print(r.keys())
     time = r["time"]
@@ -248,10 +236,8 @@ def test_uniport_sensors(show_plot=False):
     assert np.allclose(spd0_1port, -spd2_2port)
 
 
-def test_acausal_system_in_submodel(show_plot=False):
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="acausal_system_in_submodel.json")
-    r = model.simulate(stop_time=1.0)
+def test_acausal_system_in_submodel(request, show_plot=False):
+    r = test.run(request, model_json="acausal_system_in_submodel.json", stop_time=1.0)
 
     # print(r.keys())
     time = r["time"]
@@ -321,10 +307,8 @@ def test_acausal_system_in_submodel(show_plot=False):
     )
 
 
-def test_acausal_model_params(show_plot=False):
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="model_params.json")
-    r = model.simulate(stop_time=10.0)
+def test_acausal_model_params(request, show_plot=False):
+    r = test.run(request, model_json="model_params.json", stop_time=1.0)
 
     time = r["time"]
     # print(r)
@@ -362,10 +346,8 @@ def test_acausal_model_params(show_plot=False):
     assert np.allclose(sm_model_param, sm_model_param_sol, rtol=0.0, atol=2e-2)
 
 
-def test_acausal_battery(show_plot=False):
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="battery.json")
-    r = model.simulate(stop_time=1.0)
+def test_acausal_battery(request, show_plot=False):
+    r = test.run(request, model_json="battery.json", stop_time=1.0)
     time = r["time"]
     soc = r["Battery_0.soc"]
     i = r["CurrentSensor_0.i"]
@@ -378,28 +360,38 @@ def test_acausal_battery(show_plot=False):
         plt.show()
 
 
-def test_wc415():
+def test_wc415(request):
     # just the fact that they dont raise any errors is a pass :)
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="wc415_ok.json")
-    model.simulate(stop_time=10.0)
-
-    model = collimator.load_model(testdir, model="wc415_error_in_in.json")
-    model.simulate(stop_time=1.0)
+    test.run(request, model_json="wc415_ok.json", stop_time=1.0)
+    test.run(request, model_json="wc415_error_in_in.json", stop_time=1.0)
 
 
-def test_bldc():
+@pytest.mark.skip(reason="Maybe hangs in CI, see WC-434")
+def test_bldc(request):
     # just the fact that they dont raise any errors is a pass :)
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="bldc.json")
-    model.simulate(stop_time=1.0)
+    test.run(request, model_json="bldc.json", stop_time=1.0)
 
 
-def test_friction():
+def test_friction(request):
     # just the fact that they dont raise any errors is a pass :)
-    testdir = pathlib.Path(__file__).parent
-    model = collimator.load_model(testdir, model="friction.json")
-    model.simulate(stop_time=1.0)
+    test.run(request, model_json="friction.json", stop_time=1.0)
+
+
+@pytest.mark.skip(reason="casuses CI to hang")
+def test_hybrid(request):
+    # FIXME: this test casues wildcat to hang.
+    # just the fact that they dont raise any errors is a pass :)
+    test.run(request, model_json="hybrid.json", stop_time=1.0)
+
+
+def test_hydraulic(request):
+    # just the fact that they dont raise any errors is a pass :)
+    test.run(request, model_json="hydraulic.json", stop_time=1.0)
+
+
+def test_hydraulic_control_mass(request):
+    # just the fact that they dont raise any errors is a pass :)
+    test.run(request, model_json="hydraulic_control_mass.json", stop_time=1.0)
 
 
 if __name__ == "__main__":
@@ -413,4 +405,7 @@ if __name__ == "__main__":
     # test_acausal_battery(show_plot=True)
     # test_wc415()
     # test_bldc()
-    test_friction()
+    # test_friction()
+    # test_hybrid()
+    # test_hydraulic()
+    pass

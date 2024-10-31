@@ -324,17 +324,16 @@ class Optax(Optimizer):
 
         for epoch in range(self.num_epochs):
             params, opt_state, loss = self.step(params, opt_state)
-            self.losses.append(jnp.mean(loss))
+            mean_loss = jnp.mean(loss)
+            self.losses.append(mean_loss)
             if self.print_every and epoch % self.print_every == 0:
                 p: dict = self.optimizable.unflatten_params(params)
                 if self.optimizable.transformation is not None:
                     p = self.optimizable.transformation.inverse_transform(p)
                 p = {k: v.tolist() for k, v in p.items()}
-                logger.info(
-                    "Epoch %s, loss: %s", epoch, jnp.mean(loss), **logdata(params=p)
-                )
+                logger.info("Epoch %s, loss: %s", epoch, mean_loss, **logdata(params=p))
             if self.metrics_writer:
-                self.metrics_writer.write_metrics(loss=self.losses[-1])
+                self.metrics_writer.write_metrics(loss=mean_loss)
 
         self.optimal_params = self.optimizable.unflatten_params(params)
         if self.optimizable.transformation is not None:

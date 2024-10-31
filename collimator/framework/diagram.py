@@ -189,6 +189,9 @@ class Diagram(SystemBase):
         # 2. At least one subsystem has feedthrough side effects and the output
         #    ports of the diagram are used as ODE inputs.
 
+        if self.dependency_graph is None:
+            raise ValueError("Must create dependency graph first.")
+
         # If no subsystems have feedthrough side effects, we're done.
         if not self.has_feedthrough_side_effects:
             return False
@@ -431,6 +434,14 @@ class Diagram(SystemBase):
             raise UpstreamEvalError(port_locator=(system, "out", port_index))
         return val
 
+    def invalidate_output_caches(self):
+        if not self._basic_output_cache.is_active():
+            return
+
+        self._basic_output_cache.invalidate()
+        for system in self.nodes:
+            system.invalidate_output_caches()
+
     #
     # System-level declarations (should be done via DiagramBuilder)
     #
@@ -451,10 +462,6 @@ class Diagram(SystemBase):
         """
         diagram_port_index = self.declare_input_port(name=port_name)
         self._input_port_map[locator] = diagram_port_index
-
-        # Sometimes API calls will export ports manually (e.g. in the PID autotuning
-        # workflow), so we need to make sure these dependencies are properly tracked.
-        self.update_dependency_graph()
 
         return diagram_port_index
 
@@ -482,10 +489,6 @@ class Diagram(SystemBase):
         )
         self._output_port_map[locator] = diagram_port_index
         self._inv_output_port_map[diagram_port_index] = locator
-
-        # Sometimes API calls will export ports manually (e.g. in the PID autotuning
-        # workflow), so we need to make sure these dependencies are properly tracked.
-        self.update_dependency_graph()
 
         return diagram_port_index
 
@@ -580,7 +583,9 @@ class Diagram(SystemBase):
 
         return _find_in_children()
 
-    def declare_dynamic_parameter(self, name: str, parameter: Parameter) -> None:
+    def declare_dynamic_parameter(
+        self, name: str, parameter: Array | Parameter
+    ) -> None:
         """Declare a parameter for this system.
 
         Parameters:
@@ -590,8 +595,12 @@ class Diagram(SystemBase):
         # Force the parameter to have the correct name, all diagram parameters
         # should be named.
         parameter.name = name
-        super().declare_dynamic_parameter(name, parameter)
+        # do not wrap in a new Parameter object like we do for LeafSystem because
+        # the parameter could be used in multiple places.
+        self._dynamic_parameters[name] = parameter
 
+    # TODO: move this to context? it can't be called without the context first
+    # being created (which creates the dependency graph)
     def check_no_algebraic_loops(self):
         """Check for algebraic loops in the diagram.
 
@@ -686,3 +695,8 @@ class Diagram(SystemBase):
                 continue
             if _graph_has_cycle(node, visited, stack):
                 raise AlgebraicLoopError(self.name, stack)
+
+    @property
+    def has_dirty_static_parameters(self) -> bool:
+        """Check if any static parameters have been modified."""
+        return any(n.has_dirty_static_parameters for n in self.nodes)

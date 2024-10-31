@@ -23,12 +23,9 @@ from scipy.optimize import minimize
 import collimator
 from collimator.simulation import SimulatorOptions, estimate_max_major_steps
 from collimator.models import VanDerPol, RimlessWheel, CompassGait
+from collimator.testing.markers import skip_if_not_jax
 
-
-# from collimator import logging
-
-
-# logging.set_file_handler("test.log")
+skip_if_not_jax()
 
 
 def _test_find_limit_cycle(model, xc0, xd0, tf0, max_major_step_length=1.0):
@@ -42,8 +39,6 @@ def _test_find_limit_cycle(model, xc0, xd0, tf0, max_major_step_length=1.0):
         enable_autodiff=True,
         max_major_steps=max_major_steps,
         max_major_step_length=max_major_step_length,
-        atol=1e-14,
-        rtol=1e-12,
         math_backend="jax",
     )
 

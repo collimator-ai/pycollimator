@@ -41,11 +41,15 @@ Shows trajectory optimization for the problem of swinging an Acrobot to the vert
 ### [Robotic arm control](mujoco/pick_and_place.ipynb)
 
 Implement a controller for a "pick-and-place" task with a robotic arm using MuJoCo as a multibody physics engine.
-Download the necessary files from [here](mujoco/assets/franka_emika_panda.zip).
+Download the necessary files from [here](mujoco/pick_and_place/assets/franka_emika_panda.zip).
 
 ### [Automatic tuning of a PID controller](pid_tuning.ipynb)
 
 Demonstrates automatic differentiation and optimization capabilities of Collimator to automatically tune the gains of a discrete-time PID controller.
+
+### [Interactive and automatic tuning of a PID controller with sensitivity constraints](./pid_autotuning_interactive.ipynb)
+
+Showcases fast compiled simulations in Collimator for interactive applications and automatic tuning of a continuous-time PID controller with maximum sensitivity and complementary sensitivity constraints.
 
 ### [Finding limit cycles](limit_cycles.ipynb)
 

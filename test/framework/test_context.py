@@ -15,7 +15,8 @@ import jax.numpy as jnp
 from jax.tree_util import register_pytree_node
 import numpy as np
 
-from collimator.framework import DiagramBuilder, LeafSystem, Parameter
+from collimator.framework import DiagramBuilder, LeafSystem, Parameter, parameters
+from collimator.framework.error import StaticParameterError
 from collimator.library import Constant, Gain, CustomPythonBlock, ReferenceSubdiagram
 
 
@@ -185,3 +186,19 @@ def test_initialize_static_data_node_order():
         "p2.out_0",
         "p2.cache_0",
     ]
+
+
+def test_context_update_static_param_should_raise():
+    @parameters(static=["param"])
+    class CustomBlock(LeafSystem):
+        def __init__(self, param):
+            super().__init__()
+
+    p = Parameter(1.0)
+    builder = DiagramBuilder()
+    builder.add(CustomBlock(p))
+    diagram = builder.build(parameters={"p": p})
+
+    context = diagram.create_context()
+    with np.testing.assert_raises(StaticParameterError):
+        context.with_parameter("p", 2)

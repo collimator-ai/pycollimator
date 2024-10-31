@@ -14,54 +14,79 @@ import os
 
 import pytest
 
-import collimator
 from collimator.framework import (
     CollimatorError,
     StaticError,
     ShapeMismatchError,
     BlockParameterError,
 )
+import collimator.testing as test
 
 this_dir = os.path.dirname(__file__)
 output_dir = "test/workdir/errors"
 
 
-def test_add_different_length_vectors():
-    collimator.set_backend("jax")  # For TypeError, otherwise ValueError with numpy
+@pytest.mark.parametrize("backend", ["numpy", "jax"])
+def test_add_different_length_vectors(request, backend):
+    test.set_backend(backend)
     with pytest.raises(StaticError) as exc:
-        collimator.cli.run(
-            this_dir, "model_add_different_length_vectors.json", output_dir
+        test.run(
+            request,
+            model_json="model_add_different_length_vectors.json",
+            stop_time=10.0,
         )
     cause = exc.value.__cause__
-    assert isinstance(cause, TypeError)
-    assert "got incompatible shapes for broadcasting" in cause.args[0]
+    if backend == "jax":
+        assert isinstance(cause, TypeError), 'expected a TypeError, got "%s"' % type(
+            cause
+        )
+        assert "got incompatible shapes for broadcasting" in cause.args[0]
+    else:
+        assert isinstance(cause, ValueError), 'expected a ValueError, got "%s"' % type(
+            cause
+        )
+        assert "operands could not be broadcast together" in cause.args[0]
 
 
-def test_string_gain():
+def test_string_gain(request):
     with pytest.raises(CollimatorError) as e:
-        collimator.cli.run(this_dir, "model_string_gain.json", output_dir)
+        test.run(
+            request,
+            model_json="model_string_gain.json",
+            stop_time=10.0,
+        )
     assert e.value.caused_by(TypeError)
 
 
-def test_name_error():
+def test_name_error(request):
     with pytest.raises(BlockParameterError) as exc:
-        collimator.cli.run(this_dir, "model_name_error.json", output_dir)
+        test.run(
+            request,
+            model_json="model_name_error.json",
+            stop_time=10.0,
+        )
     cause = exc.value.__cause__
     assert isinstance(cause, NameError)
     assert "name 'undefined_name' is not defined" in cause.args[0]
 
 
-def test_syntax_error():
+def test_syntax_error(request):
     with pytest.raises(BlockParameterError) as exc:
-        collimator.cli.run(this_dir, "model_syntax_error.json", output_dir)
+        test.run(
+            request,
+            model_json="model_syntax_error.json",
+            stop_time=10.0,
+        )
     cause = exc.value.__cause__
     assert isinstance(cause, SyntaxError)
     # 3.9: assert "EOL while scanning string literal" in cause.args[0]
     # 3.10: assert "unterminated string literal" in cause.args[0]
 
 
-def test_integrator_state_wrong_shape():
+def test_integrator_state_wrong_shape(request):
     with pytest.raises(ShapeMismatchError):
-        collimator.cli.run(
-            this_dir, "model_integrator_state_wrong_shape.json", output_dir
+        test.run(
+            request,
+            model_json="model_integrator_state_wrong_shape.json",
+            stop_time=10.0,
         )

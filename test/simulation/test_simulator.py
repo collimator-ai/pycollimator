@@ -22,17 +22,20 @@ from collimator.library import (
     DiscreteClock,
     UnitDelay,
 )
-
+from collimator.backend import numpy_api as cnp
 from collimator.logging import logger
 from collimator.simulation import SimulatorOptions, ResultsOptions, ResultsMode
-
+from collimator.testing.markers import skip_if_not_jax
 
 pytestmark = pytest.mark.minimal
 
 
 class TestContinuousTime:
     @pytest.mark.parametrize("enable_tracing", [True, False])
-    def test_leaf_system(self, enable_tracing, dtype=jnp.float64):
+    def test_leaf_system(self, enable_tracing, dtype=cnp.float64):
+        if enable_tracing:
+            skip_if_not_jax()
+
         a = 1.5
 
         class ScalarLinear(collimator.LeafSystem):
@@ -63,7 +66,7 @@ class TestContinuousTime:
         assert ctx.time == tf
 
         x = ctx.continuous_state
-        assert jnp.allclose(x, x0 * jnp.exp(-a * tf), rtol=1e-4, atol=1e-6)
+        assert cnp.allclose(x, x0 * cnp.exp(-a * tf), rtol=1e-4, atol=1e-6)
 
     def test_flat_diagram(self, dtype=jnp.float64):
         # Continuous-time integration with double integrator model
@@ -664,6 +667,90 @@ def test_notimplemented_output_mode():
         "Simulation output mode discrete_steps_only is not supported. Only 'auto' is presently supported."
         in str(e)
     )
+
+
+def test_dirty_static_params_should_raise():
+    """
+    Test simulate raises an error if a static parameter is dirty.
+    """
+
+    @collimator.ports(inputs=0, outputs=1)
+    @collimator.parameters(static=["s"])
+    class MySystem(collimator.LeafSystem):
+        def __init__(self, s, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+        def initialize(self, s, **kwargs):
+            self.s = s
+            self.configure_output_port(
+                0,
+                lambda t, s: self.s,
+                requires_inputs=True,
+            )
+
+    p = collimator.Parameter(1.0)
+    builder = collimator.DiagramBuilder()
+    builder.add(MySystem(p))
+    diagram = builder.build(name="MyModel")
+
+    context = diagram.create_context()
+    p.set(2.0)
+
+    with pytest.raises(ValueError) as e:
+        collimator.simulate(
+            diagram,
+            context,
+            (0.0, 1.0),
+        )
+
+    assert (
+        "Some static parameters have been updated. Please create a new context."
+        in str(e)
+    )
+
+
+def test_change_static_parameter():
+    @collimator.ports(inputs=0, outputs=1)
+    @collimator.parameters(static=["s"])
+    class MySystem(collimator.LeafSystem):
+        def __init__(self, s, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+        def initialize(self, s, **kwargs):
+            self.s = s
+            self.configure_output_port(
+                0,
+                lambda t, s: self.s,
+                requires_inputs=True,
+            )
+
+    p = collimator.Parameter(1.0)
+
+    builder = collimator.DiagramBuilder()
+    my_system = builder.add(MySystem(p, name="MySystem"))
+    diagram = builder.build(name="MyModel", parameters={"p": p})
+
+    context1 = diagram.create_context()
+    results1 = collimator.simulate(
+        diagram,
+        context1,
+        (0.0, 1.0),
+        recorded_signals={"x": my_system.output_ports[0]},
+    )
+
+    np.testing.assert_allclose(results1.outputs["x"], 1.0)
+
+    p.set(3.0)
+    context2 = diagram.create_context()
+
+    results2 = collimator.simulate(
+        diagram,
+        context2,
+        (0.0, 1.0),
+        recorded_signals={"x": my_system.output_ports[0]},
+    )
+
+    np.testing.assert_allclose(results2.outputs["x"], 3.0)
 
 
 if __name__ == "__main__":

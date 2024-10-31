@@ -448,7 +448,7 @@ def _get_jacoboian_at_t0(t, eqs, X, ics, ics_weak, knowns, full_X=False):
         jac_F = jax.jacfwd(F)(X_0)
 
     else:
-        # FIXME: Handle the case where no strong ICs are possible, this `ics` is empty
+        # FIXME: Handle the case where no strong ICs are possible, thus `ics` is empty
         x, x_0 = zip(*ics.items())
         y, y_0 = zip(*ics_weak.items())
 
@@ -517,7 +517,7 @@ def _get_root_function(t, eqs, X, ics, ics_weak, knowns):
     return F, y
 
 
-def compute_consistent_initial_conditions(
+def _compute_consistent_initial_conditions(
     t, eqs, X, ics, ics_weak, knowns, config=None
 ):
     """
@@ -579,3 +579,36 @@ def compute_consistent_initial_conditions(
     X_ic = [X_ic_all[var] for var in X]
 
     return X_ic
+
+
+def compute_initial_conditions(
+    t, eqs, X, ics, ics_weak, knowns, config=None, verbose=False
+):
+    """
+    Compute the initial conditions for the system of equations obtained after the
+    Pantelides algorithm.
+    """
+    if verbose:
+        print(
+            "\n" "Proceeding with numerical computation of ICs.",
+        )
+
+    X_ic = _compute_consistent_initial_conditions(
+        t,
+        eqs,
+        X,
+        ics,
+        ics_weak,
+        knowns,
+        config=config,
+    )
+
+    X_ic_mapping = {var: ic for var, ic in zip(X, X_ic)}
+
+    if verbose:
+        print("\n")
+        print("##### Initial conditions #####", "\n")
+        for var, var_ic in X_ic_mapping.items():
+            print(f"{var} = {var_ic}")
+
+    return X_ic_mapping

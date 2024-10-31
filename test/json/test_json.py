@@ -48,6 +48,7 @@ test/app/StateMachine/
         "test_signal_routing.json",
         "test_source.json",
         "test_sink.json",
+        "test_custom_leaf_system.json",
     ],
 )
 def test_json(request, model_json):

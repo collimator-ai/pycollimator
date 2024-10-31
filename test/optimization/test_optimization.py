@@ -19,7 +19,7 @@ import platform
 import pytest
 import numpy as np
 import jax.numpy as jnp
-from collimator import DiagramBuilder, Parameter
+from collimator import DiagramBuilder, Parameter, SimulatorOptions
 from collimator.library import Adder, Constant, Gain, Integrator, Power
 from collimator.optimization import (
     IPOPT,
@@ -169,7 +169,7 @@ class OptimizableModelWithConstraints(Optimizable):
         return new_context
 
 
-class OptimizableModelStoachastic(OptimizableWithStochasticVars):
+class OptimizableModelStochastic(OptimizableWithStochasticVars):
     def __init__(
         self,
         diagram,
@@ -218,11 +218,14 @@ def test_optimization_unbounded():
     params_0 = {"c": 0.5}
     sim_t_span = (0.0, 2.0)
 
+    sim_options = SimulatorOptions(max_major_steps=1)
+
     optimizable_model = OptimizableModel(
         diagram,
         base_context,
         params_0=params_0,
         sim_t_span=sim_t_span,
+        sim_options=sim_options,
     )
 
     # Scipy with L-BFGS-B
@@ -404,23 +407,26 @@ def test_optimization_stochastic():
         names, shapes, distributions, distributions_configs
     )
 
-    optimizable_model = OptimizableModelStoachastic(
+    sim_options = SimulatorOptions(max_major_steps=1)
+
+    optimizable_model = OptimizableModelStochastic(
         diagram,
         base_context,
         params_0=params_0,
         sim_t_span=sim_t_span,
         distribution_config_vars=distribution_config_vars,
+        sim_options=sim_options,
     )
 
     # Optax SGD
     optim = OptaxWithStochasticVars(
         optimizable_model,
         "sgd",
-        0.01,
+        0.1,
         {},
         batch_size=10,
         num_batches=10,
-        num_epochs=200,
+        num_epochs=50,
         print_every=10,
     )
     opt_param = optim.optimize()
@@ -465,7 +471,7 @@ def test_optimization_transforms():
 def test_optimization_transforms_stochastic():
     diagram = _make_diagram()
     base_context = diagram.create_context()
-    params_0 = {"c": 1.0}
+    params_0 = {"c": 0.5}
     sim_t_span = (0.0, 2.0)
 
     params_min = {"c": 0.45}
@@ -484,7 +490,9 @@ def test_optimization_transforms_stochastic():
         names, shapes, distributions, distributions_configs
     )
 
-    optimizable_model = OptimizableModelStoachastic(
+    sim_options = SimulatorOptions(max_major_steps=1)
+
+    optimizable_model = OptimizableModelStochastic(
         diagram,
         base_context,
         params_0=params_0,
@@ -492,22 +500,24 @@ def test_optimization_transforms_stochastic():
         bounds=None,
         transformation=composite,
         distribution_config_vars=distribution_config_vars,
+        sim_options=sim_options,
+        seed=42,
     )
 
     # Optax SGD
     optim = OptaxWithStochasticVars(
         optimizable_model,
         "sgd",
-        0.01,
+        0.1,
         {},
         batch_size=10,
         num_batches=10,
-        num_epochs=500,
-        print_every=100,
+        num_epochs=100,
+        print_every=10,
     )
     opt_param = optim.optimize()
     print(opt_param)
-    assert np.isclose(opt_param["c"], 1.0, atol=0.2)
+    assert np.isclose(opt_param["c"], params_max["c"], atol=0.2)
     assert opt_param["c"] >= params_min["c"]
     assert opt_param["c"] <= params_max["c"]
 

@@ -21,6 +21,7 @@ import jax.numpy as jnp
 
 import collimator
 from collimator import library
+from collimator.testing.markers import requires_jax
 
 A0 = np.array([[-1.0, 0.0], [0.0, -1.0]])
 B0 = np.array([[0.0], [1.0]])
@@ -100,6 +101,7 @@ class TestVectorLinearLeaf:
         # should recognize this as trivial and not store it
         assert not model.has_mass_matrix
 
+    @requires_jax()
     def test_sim_diag_mass(self):
         # Non-trivial mass matrix specified by diagonals
         tf = 2.0
@@ -114,6 +116,7 @@ class TestVectorLinearLeaf:
         # The mass matrix should be stored
         assert model.has_mass_matrix
 
+    @requires_jax()
     def test_sim_square_mass(self):
         # Non-trivial mass matrix specified as square array
         tf = 2.0
@@ -128,6 +131,7 @@ class TestVectorLinearLeaf:
         # The mass matrix should be stored
         assert model.has_mass_matrix
 
+    @requires_jax()
     def test_sim_singular_mass(self):
         # Singular mass matrix.  In this case the second row
         # amounts to a constraint that the second state is equal
@@ -198,12 +202,14 @@ class TestVectorLinearDiagram:
         assert np.allclose(xf1, xf2)
         return system
 
+    @requires_jax()
     def test_sim_identity_mass(self):
         tf = 2.0
         M = np.eye(2)
         system = self._test_sim(tf, mass_matrix=M)
         assert not system.has_mass_matrix
 
+    @requires_jax()
     def test_sim_diag_mass(self):
         # Non-trivial mass matrix specified by diagonals
         tf = 2.0
@@ -211,6 +217,7 @@ class TestVectorLinearDiagram:
         system = self._test_sim(tf, mass_matrix=M)
         assert system.has_mass_matrix
 
+    @requires_jax()
     def test_sim_square_mass(self):
         # Non-trivial mass matrix specified by diagonals
         tf = 2.0
@@ -218,6 +225,7 @@ class TestVectorLinearDiagram:
         system = self._test_sim(tf, mass_matrix=M)
         assert system.has_mass_matrix
 
+    @requires_jax()
     def test_sim_singular_mass(self):
         # Singular mass matrix. See TestVectorLinearLeaf for interpretation
         tf = 2.0
@@ -260,6 +268,7 @@ class Robertson(collimator.LeafSystem):
         )
 
 
+@requires_jax()
 def test_robertson():
     # Test the Robertson system with a singular mass matrix
     model = Robertson()
@@ -372,6 +381,7 @@ class PlanarPendulum(collimator.LeafSystem):
         return jnp.concatenate([f, g])
 
 
+@requires_jax()
 def test_planar_pendulum():
     # Test the planar pendulum system with a singular mass matrix
     L = 1.0

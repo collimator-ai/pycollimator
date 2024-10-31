@@ -6,7 +6,7 @@
       "min_step": 0,
       "absolute_tolerance": 1e-06,
       "relative_tolerance": 0.001,
-      "max_minor_steps_per_major_step": 4096
+      "max_checkpoints": 16
     },
     "stop_time": 10,
     "workspace": {},

@@ -22,7 +22,7 @@ from jax._src.numpy.util import promote_dtypes_inexact
 from jax.flatten_util import ravel_pytree
 from jax.experimental.ode import ravel_first_arg
 
-from ..ode_solver import ODESolverBase, ODESolverState
+from ..ode_solver import ODESolverBase, ODESolverState, ODESolverError
 
 from collimator.lazy_loader import LazyLoader, LazyModuleAccessor
 
@@ -38,11 +38,32 @@ else:
     block_diag = LazyModuleAccessor(scipy_linalg, "block_diag")
 
 
-__all__ = ["ODESolverImpl", "norm"]
+__all__ = [
+    "ODESolverImpl",
+    "ODESolverState",
+    "norm",
+    "error_step_size_too_small",
+]
 
 
 def norm(x):
     return jnp.linalg.norm(x) / x.size**0.5
+
+
+def raise_step_size_too_small(eps, t, h, tf, disable=True):
+    if (not disable) and (abs(h) < eps) and (abs(t - tf) > eps):
+        raise ODESolverError(
+            f"The ODE solver could not meet accuracy tolerance near time t={t}. "
+            "The step size was reduced in an attempt to meet the tolerance, but "
+            "is approaching the difference between two adjacent floating-point "
+            "numbers. This likely indicates that the solution to the ODE is diverging."
+        )
+
+
+@jax.jit
+def error_step_size_too_small(t, h, tf, disable):
+    eps = np.finfo(h.dtype).eps
+    jax.debug.callback(raise_step_size_too_small, eps, t, h, tf, disable)
 
 
 class ODESolverImpl(ODESolverBase):

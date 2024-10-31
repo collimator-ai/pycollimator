@@ -12,6 +12,7 @@
 
 """Test for collimator.framework.parameter."""
 
+import sys
 import pytest
 
 import jax.numpy as jnp
@@ -20,6 +21,7 @@ import numpy as np
 
 from collimator.framework import Parameter
 from collimator.framework.error import ParameterError
+from collimator.backend import numpy_api as cnp
 
 
 pytest.mark.minimal
@@ -115,6 +117,21 @@ expr = {
         (((1, 2), (1, 2)), "((one, two), (one, two))"),
     ),
 }
+
+# FIXME on windows we have some oddities with int32/int64
+# We could also try setting np.int_ = np.int64 globally but that may have unwanted side effects
+if sys.platform == "win32":
+    expr["np.array([1])"] = (
+        np.array([1], dtype=np.int32),
+        (np.array([1], dtype=np.int32), "np.array([1], dtype=np.int32)"),
+    )
+    expr["np.array([[1, 2], [3, 4]])"] = (
+        np.array([[1, 2], [3, 4]], dtype=np.int32),
+        (
+            np.array([[1, 2], [3, 4]], dtype=np.int32),
+            "np.array([[1, 2], [3, 4]], dtype=np.int32)",
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -265,5 +282,5 @@ def test_parameter_string_values():
 
 def test_parameter_list_as_array():
     p = Parameter(value=[1, 2], as_array=True)
-    assert isinstance(p.get(), jnp.ndarray)
+    assert isinstance(p.get(), cnp.ndarray)
     np.testing.assert_array_equal(p.get(), np.array([1, 2]))

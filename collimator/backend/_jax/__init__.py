@@ -41,6 +41,7 @@ jax_functions = {
     "pure_callback": jax.pure_callback,
     "ODESolver": ODESolver,
     "interp2d": interp2d,
+    "switch": lax.switch,
 }
 
 jax_constants = {

@@ -22,9 +22,11 @@ from ._numpy import numpy_functions, numpy_constants
 from .results_data import AbstractResultsData
 
 # IS_JAXLITE is used for the pyodide build where we only have numpy and jaxlite
+# FIXME: set COLLIMATOR_BACKEND instead of IS_JAXLITE
 IS_JAXLITE = os.environ.get("JAXLITE", "0") == "1"
-USE_TORCH_BACKEND = os.environ.get("USE_TORCH_BACKEND", "0") == "1"
-DEFAULT_BACKEND = "jax" if not IS_JAXLITE else "numpy"
+REQUESTED_BACKEND = os.environ.get("COLLIMATOR_BACKEND", None)
+DEFAULT_BACKEND = REQUESTED_BACKEND or ("jax" if not IS_JAXLITE else "numpy")
+
 if not IS_JAXLITE:
     from ._jax import jax_functions, jax_constants
     from ._torch import torch_functions, torch_constants
@@ -51,10 +53,12 @@ class MathDispatcher:
 
     if not IS_JAXLITE:
         _backends["jax"] = _make_backend("JaxBackend", jax_functions, jax_constants)
-        if USE_TORCH_BACKEND:
-            _backends["torch"] = _make_backend(
-                "TorchBackend", torch_functions(), torch_constants
-            )
+
+    # only load torch backend if requested (it's quite likely broken)
+    if REQUESTED_BACKEND == "torch":
+        _backends["torch"] = _make_backend(
+            "TorchBackend", torch_functions(), torch_constants
+        )
 
     def __init__(self) -> None:
         if IS_JAXLITE:
@@ -70,9 +74,19 @@ class MathDispatcher:
         return self._active_backend
 
     def set_backend(self, backend: str):
+        """Change the numerical backend (JAX or numpy)
+
+        This function should preferrably be called before creating or loading any
+        model, as early parameter and block evaluations may depend on the backend.
+        Switching backends after loading a model could lead to some errors.
+        """
         if backend not in self._backends:
             raise ValueError(f"Backend {backend} not supported")
         self._active_backend = backend
+
+        from collimator.framework.cache import BasicOutputCache
+
+        BasicOutputCache.activate(backend)
 
     @property
     def intx(self):
@@ -133,8 +147,8 @@ io_callback = dispatcher.function("io_callback")
 pure_callback = dispatcher.function("pure_callback")
 Rotation = dispatcher.Rotation
 interp2d = dispatcher.function("interp2d")
-
 ODESolver = dispatcher.function("ODESolver")
+switch = dispatcher.function("switch")
 
 
 @register_pytree_node_class

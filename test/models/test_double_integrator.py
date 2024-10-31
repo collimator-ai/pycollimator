@@ -12,14 +12,13 @@
 
 import pytest
 
-import jax.numpy as jnp
 
 import collimator
 from collimator.library import (
     Integrator,
     Sine,
 )
-
+from collimator.backend import numpy_api as cnp
 from collimator import logging
 
 
@@ -28,7 +27,7 @@ logging.set_file_handler("test.log")
 pytestmark = pytest.mark.minimal
 
 
-def test_double_integrator(dtype=jnp.float64):
+def test_double_integrator(dtype=cnp.float64):
     builder = collimator.DiagramBuilder()
     Sin_0 = builder.add(Sine(name="Sin_0"))
 
@@ -49,7 +48,7 @@ def test_double_integrator(dtype=jnp.float64):
     print([(p.name, p.system) for p in Integrator_0.output_ports])
     print([(p.name, p.system) for p in Integrator_1.input_ports])
 
-    t = jnp.linspace(0.0, 10.0, 100, dtype=dtype)
+    t = cnp.linspace(0.0, 10.0, 100, dtype=dtype)
     options = collimator.SimulatorOptions(atol=1e-8, rtol=1e-6)
     recorded_signals = {
         "x": Integrator_1.output_ports[0],
@@ -67,12 +66,12 @@ def test_double_integrator(dtype=jnp.float64):
 
     print(x)
     print(v)
-    print(jnp.sin(t))
-    print(jnp.cos(t))
-    print(jnp.std(x - jnp.sin(t)))
-    print(jnp.std(x + jnp.sin(t)))
-    assert jnp.allclose(x, -jnp.sin(t), rtol=1e-4, atol=1e-6)
-    assert jnp.allclose(v, -jnp.cos(t), rtol=1e-4, atol=1e-6)
+    print(cnp.sin(t))
+    print(cnp.cos(t))
+    print(cnp.std(x - cnp.sin(t)))
+    print(cnp.std(x + cnp.sin(t)))
+    assert cnp.allclose(x, -cnp.sin(t), rtol=1e-4, atol=1e-6)
+    assert cnp.allclose(v, -cnp.cos(t), rtol=1e-4, atol=1e-6)
 
     assert x.dtype == dtype
     assert v.dtype == dtype

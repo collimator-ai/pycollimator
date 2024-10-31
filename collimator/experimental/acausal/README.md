@@ -33,7 +33,7 @@ Presently, the pipeline starting from model.json is as follows:
 
 
 ## Development Status
-This is under heavy development. Expect the odd `print()` statement, and occassional broken or incomplete feature.
+This is under heavy development. Expect the odd `print()` statement, and occassional broken or incomplete features.
 
 # Usage
 The basic use case in pycollimator is as follows:

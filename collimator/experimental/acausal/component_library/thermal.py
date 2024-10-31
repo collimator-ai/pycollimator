@@ -161,6 +161,86 @@ class HeatflowSource(ComponentBase):
             self.add_eqs([sp.Eq(Q_flow.s, -Q2.s)])
 
 
+class Insulator(ThermalTwoPort):
+    """
+    Ideal insulator in thermal domain. The characteristic equation is:
+    T1(t) - T2(t) = heatflow(t)*R, where R is the insulation coefficient in degK/Watt.
+
+    Can be used to model heat transfer by conduction, and/or convection.
+
+    Args:
+        R (number):
+            the insulation coefficient in degK/Watt
+        enable_resistance_port (bool):
+            When true, the value of R is from a input signal.
+    """
+
+    def __init__(self, ev, name=None, R=1.0, enable_resistance_port=False):
+        self.name = self.__class__.__name__ if name is None else name
+        super().__init__(ev, self.name)
+
+        if enable_resistance_port:
+            R = self.declare_symbol(ev, "R", self.name, kind=SymKind.inp)
+        else:
+            R = self.declare_symbol(
+                ev,
+                "R",
+                self.name,
+                kind=SymKind.param,
+                val=R,
+                validator=lambda R: R > 0.0,
+                invalid_msg=f"Component {self.__class__.__name__} {self.name} must have R>0",
+            )
+
+        self.add_eqs(
+            [
+                # does not store energy
+                sp.Eq(0, self.Q1.s + self.Q2.s),
+                # thermal conduction equation. use Q1 due to sign convention
+                sp.Eq(self.dT.s, R.s * self.Q1.s),
+            ]
+        )
+
+
+class Radiation(ThermalTwoPort):
+    """
+    models heat transfer by radiation. The characteristic equation is:
+    T1(t)**4 - T2(t)**4 = heatflow(t)*Gr*signam, where Gr is the radiation coefficient in m**2.
+
+    Args:
+        Gr (number):
+            the radiation coefficient in m**2
+        enable_Gr_port (bool):
+            When true, the value of Gr is from a input signal.
+    """
+
+    def __init__(self, ev, name=None, Gr=1.0, enable_Gr_port=False):
+        self.name = self.__class__.__name__ if name is None else name
+        super().__init__(ev, self.name)
+
+        if enable_Gr_port:
+            Gr = self.declare_symbol(ev, "Gr", self.name, kind=SymKind.inp)
+        else:
+            Gr = self.declare_symbol(
+                ev,
+                "Gr",
+                self.name,
+                kind=SymKind.param,
+                val=Gr,
+                validator=lambda Gr: Gr > 0.0,
+                invalid_msg=f"Component {self.__class__.__name__} {self.name} must have Gr>0",
+            )
+
+        self.add_eqs(
+            [
+                # does not store energy
+                sp.Eq(0, self.Q1.s + self.Q2.s),
+                # thermal conduction equation. use Q1 due to sign convention
+                sp.Eq(self.Q1.s, Gr.s * ev.sigma.s * (self.T1.s**4 - self.T2.s**4)),
+            ]
+        )
+
+
 class TemperatureSensor(ComponentBase):
     """
     Ideal temperature sensor in the thermal domain.
@@ -223,83 +303,3 @@ class TemperatureSource(ThermalOnePort):
 
         # temperature source equality
         self.add_eqs([sp.Eq(self.T.s, temperature.s)])
-
-
-class ThermalInsulator(ThermalTwoPort):
-    """
-    Ideal insulator in thermal domain. The characteristic equation is:
-    T1(t) - T2(t) = heatflow(t)*R, where R is the insulation coefficient in degK/Watt.
-
-    Can be used to model heat transfer by conduction, and/or convection.
-
-    Args:
-        R (number):
-            the insulation coefficient in degK/Watt
-        enable_resistance_port (bool):
-            When true, the value of R is from a input signal.
-    """
-
-    def __init__(self, ev, name=None, R=1.0, enable_resistance_port=False):
-        self.name = self.__class__.__name__ if name is None else name
-        super().__init__(ev, self.name)
-
-        if enable_resistance_port:
-            R = self.declare_symbol(ev, "R", self.name, kind=SymKind.inp)
-        else:
-            R = self.declare_symbol(
-                ev,
-                "R",
-                self.name,
-                kind=SymKind.param,
-                val=R,
-                validator=lambda R: R > 0.0,
-                invalid_msg=f"Component {self.__class__.__name__} {self.name} must have R>0",
-            )
-
-        self.add_eqs(
-            [
-                # does not store energy
-                sp.Eq(0, self.Q1.s + self.Q2.s),
-                # thermal conduction equation. use Q1 due to sign convention
-                sp.Eq(self.dT.s, R.s * self.Q1.s),
-            ]
-        )
-
-
-class ThermalRadiation(ThermalTwoPort):
-    """
-    models heat transfer by radiation. The characteristic equation is:
-    T1(t)**4 - T2(t)**4 = heatflow(t)*Gr*signam, where Gr is the radiation coefficient in m**2.
-
-    Args:
-        Gr (number):
-            the radiation coefficient in m**2
-        enable_Gr_port (bool):
-            When true, the value of Gr is from a input signal.
-    """
-
-    def __init__(self, ev, name=None, Gr=1.0, enable_Gr_port=False):
-        self.name = self.__class__.__name__ if name is None else name
-        super().__init__(ev, self.name)
-
-        if enable_Gr_port:
-            Gr = self.declare_symbol(ev, "Gr", self.name, kind=SymKind.inp)
-        else:
-            Gr = self.declare_symbol(
-                ev,
-                "Gr",
-                self.name,
-                kind=SymKind.param,
-                val=Gr,
-                validator=lambda Gr: Gr > 0.0,
-                invalid_msg=f"Component {self.__class__.__name__} {self.name} must have Gr>0",
-            )
-
-        self.add_eqs(
-            [
-                # does not store energy
-                sp.Eq(0, self.Q1.s + self.Q2.s),
-                # thermal conduction equation. use Q1 due to sign convention
-                sp.Eq(self.T1.s**4 - self.T2.s**4, Gr.s * self.Q1.s),
-            ]
-        )

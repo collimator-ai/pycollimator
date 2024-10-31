@@ -143,3 +143,8 @@ def interp2d(xp, yp, zp, x, y, fill_value=None):
         z = np.where(oob, fill_value, z)
 
     return z
+
+
+def switch(index, branches, *operands):
+    index = np.clip(index, 0, len(branches) - 1)
+    return branches[index](*operands)

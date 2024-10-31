@@ -14,9 +14,9 @@
 This module records the build commands and generates the code for the diagram.
 """
 
-from collections import OrderedDict
+from contextlib import contextmanager
 import inspect
-from typing import Any, Callable, NamedTuple, TYPE_CHECKING
+from typing import Any, Callable, NamedTuple, TYPE_CHECKING, Union
 
 import jax
 import numpy as np
@@ -28,8 +28,11 @@ if TYPE_CHECKING:
     from .parameter import Parameter
     from .port import InputPort, OutputPort
     from .system_base import SystemBase
+    from ..experimental.acausal.component_library.component_base import ComponentBase
     from ..library.reference_subdiagram import ReferenceSubdiagramProtocol
 
+
+__IMPORTS__ = set()
 
 __BUILD_CMDS__ = []
 
@@ -40,27 +43,6 @@ __BLOCK_TO_BUILDER__ = {}
 __REF_SUBDIAGRAMS__ = {}  # ref_id to variable name
 
 __IS_RECORDING__ = False
-
-
-def _init_pos_args_to_str(block, init_fn):
-    sig = inspect.signature(init_fn)
-    args = OrderedDict()
-    for name, param in sig.parameters.items():
-        if name == "self":
-            continue
-        is_positional_or_keyword = param.kind in (
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.POSITIONAL_ONLY,
-        )
-        if is_positional_or_keyword and param.default == inspect.Parameter.empty:
-            if name in block.parameters:
-                p = block.parameters[name]
-                if not p.is_python_expr and isinstance(p.value, str):
-                    args[name] = repr(p.value)
-                else:
-                    args[name] = str(p)
-
-    return args
 
 
 def _init_kwargs_to_str(block, kwargs):
@@ -98,15 +80,87 @@ def _unindent(code: str):
     return "\n".join(line[prefix_spaces:] for line in lines)
 
 
+class CreateAcausalDiagramCommand(NamedTuple):
+    def __str__(self):
+        # FIXME: should parse the __init__ args but for the purpose of showing
+        # code that works in the UI, that will do.
+        return "ad = AcausalDiagram()"
+
+
+class CreateAcausalCompilerCommand(NamedTuple):
+    def __str__(self):
+        # FIXME: should parse the __init__ args but for the purpose of showing
+        # code that works in the UI, that will do.
+        return "ac = AcausalCompiler(ee, ad)"
+
+
+class CompileAcausalDiagramCommand(NamedTuple):
+    system: "LeafSystem"
+
+    def __str__(self):
+        return f"{_get_block_name(self.system)} = ac.generate_acausal_system(name='{self.system.name}')"
+
+
+class CreateEqnEnvCommand(NamedTuple):
+    def __str__(self):
+        return "ee = EqnEnv()"
+
+
+class ConnectAcausalPortsCommand(NamedTuple):
+    block1: "ComponentBase"
+    port1: str
+    block2: "ComponentBase"
+    port2: str
+
+    def __str__(self):
+        args = [
+            self.block1.name,
+            repr(self.port1),
+            self.block2.name,
+            repr(self.port2),
+        ]
+        args = ", ".join(args)
+        return f"ad.connect({args})"
+
+
+class CreateAcausalBlockCommand(NamedTuple):
+    block: "ComponentBase"
+    init_fn: Callable
+    args: list[Any]
+    kwargs: dict[str, Any]
+
+    def __str__(self):
+        args = [
+            repr(v) if isinstance(v, str) else str(v)
+            for v in self.args[1:]  # skip EqnEnv
+        ]
+        args = ["ee"] + args
+        args_str = ", ".join(args)
+        kwargs_str = ""
+
+        if self.kwargs:
+            kwargs_str = ", ".join(
+                f"{k}={repr(v)}" if isinstance(v, str) else f"{k}={v}"
+                for k, v in self.kwargs.items()
+            )
+
+        all_args = ", ".join(x for x in [args_str, kwargs_str] if x)
+        block_name = _get_block_name(self.block)
+
+        domain = self.block.__class__.__module__.split(".")[-1]
+        clazz = f"{domain}.{self.block.__class__.__qualname__}"
+        return f"{block_name} = {clazz}({all_args})"
+
+
 class CreateBlockCommand(NamedTuple):
     block: "LeafSystem"
     init_fn: Callable
-    args: list[str]
-    kwargs: dict[str, str]
+    args: list[Any]
+    kwargs: dict[str, Any]
 
     def __str__(self):
-        args = _init_pos_args_to_str(self.block, self.init_fn)
-        args_str = ", ".join(args.values())
+        args = [repr(v) if isinstance(v, str) else str(v) for v in self.args]
+        args_str = ", ".join(args)
 
         kwargs_str = ""
         if self.kwargs:
@@ -117,7 +171,9 @@ class CreateBlockCommand(NamedTuple):
 
         all_args = ", ".join(x for x in [args_str, kwargs_str] if x)
         block_name = _get_block_name(self.block)
-        return f"{block_name} = library.{self.block.__class__.__name__}({all_args})"
+
+        clazz = f"library.{self.block.__class__.__name__}"
+        return f"{block_name} = {clazz}({all_args})"
 
 
 class CreateParameterCommand(NamedTuple):
@@ -227,10 +283,23 @@ class RegisterRefSubdiagramCommand(NamedTuple):
 
 
 def clear():
+    __IMPORTS__.clear()
     __BUILD_CMDS__.clear()
     __BUILDERS_ID__.clear()
     __BLOCK_TO_BUILDER__.clear()
     __REF_SUBDIAGRAMS__.clear()
+
+
+@contextmanager
+def paused():
+    global __IS_RECORDING__
+    was_recording = __IS_RECORDING__
+    __IS_RECORDING__ = False
+
+    yield
+
+    if was_recording:
+        resume()
 
 
 def pause():
@@ -248,6 +317,11 @@ def start():
     resume()
 
 
+def stop():
+    pause()
+    clear()
+
+
 def is_recording():
     return __IS_RECORDING__
 
@@ -261,6 +335,10 @@ def _action(func):
 
 
 def _is_default(value, default):
+    from .parameter import Parameter  # avoid circular import
+
+    if isinstance(value, Parameter):
+        return False
     if default is inspect.Parameter.empty:
         return False
     array_types = (jax.Array, np.ndarray)
@@ -271,8 +349,13 @@ def _is_default(value, default):
     return False
 
 
+def _add_acausal_domain_to_imports(full_mod_path: str):
+    domain = full_mod_path.split(".")[-1]
+    __IMPORTS__.add(f"from collimator.experimental import {domain}")
+
+
 @_action
-def create_block(block: "LeafSystem", init_fn, *args, **kwargs):
+def create_block(block: Union["LeafSystem", "ComponentBase"], init_fn, *args, **kwargs):
     sig = inspect.signature(init_fn)
     # Bind the arguments to the signature
     bound_args = sig.bind(block, *args, **kwargs)
@@ -292,8 +375,53 @@ def create_block(block: "LeafSystem", init_fn, *args, **kwargs):
                 block, init_fn, args, filtered_kwargs
             )
             return
+        elif isinstance(cmd, CreateAcausalBlockCommand) and cmd.block == block:
+            # replace the command with the new one
+            __BUILD_CMDS__[i] = CreateAcausalBlockCommand(
+                block, init_fn, args, filtered_kwargs
+            )
+            return
 
-    __BUILD_CMDS__.append(CreateBlockCommand(block, init_fn, args, filtered_kwargs))
+    from .leaf_system import LeafSystem  # avoid circular import
+
+    if isinstance(block, LeafSystem):
+        __IMPORTS__.add("from collimator import library")
+        __BUILD_CMDS__.append(CreateBlockCommand(block, init_fn, args, filtered_kwargs))
+    else:
+        _add_acausal_domain_to_imports(block.__class__.__module__)
+        __BUILD_CMDS__.append(
+            CreateAcausalBlockCommand(block, init_fn, args, filtered_kwargs)
+        )
+
+
+@_action
+def create_acausal_compiler():
+    __IMPORTS__.add("from collimator.experimental import AcausalCompiler")
+    __BUILD_CMDS__.append(CreateAcausalCompilerCommand())
+
+
+@_action
+def compile_acausal_diagram(system: "LeafSystem"):
+    __BUILD_CMDS__.append(CompileAcausalDiagramCommand(system))
+
+
+@_action
+def create_eqn_env():
+    __IMPORTS__.add("from collimator.experimental import EqnEnv")
+    __BUILD_CMDS__.append(CreateEqnEnvCommand())
+
+
+@_action
+def create_acausal_diagram():
+    __IMPORTS__.add("from collimator.experimental import AcausalDiagram")
+    __BUILD_CMDS__.append(CreateAcausalDiagramCommand())
+
+
+@_action
+def connect_acausal_ports(
+    block1: "ComponentBase", port1: str, block2: "ComponentBase", port2: str
+):
+    __BUILD_CMDS__.append(ConnectAcausalPortsCommand(block1, port1, block2, port2))
 
 
 @_action
@@ -301,6 +429,7 @@ def create_parameter(args):
     if args.get("is_python_expr", False):
         args.pop("py_namespace")
     if args.get("name", False):
+        __IMPORTS__.add("from collimator.framework import Parameter")
         __BUILD_CMDS__.append(CreateParameterCommand(args))
 
 
@@ -360,15 +489,6 @@ def register_ref_subdiagram(
     )
 
 
-def get_imports():
-    imports = [
-        "from collimator import DiagramBuilder, library",
-    ]
-    if any(isinstance(cmd, CreateParameterCommand) for cmd in __BUILD_CMDS__):
-        imports.append("from collimator.framework.parameter import Parameter")
-    return imports
-
-
 def get_commands():
     return __BUILD_CMDS__
 
@@ -381,7 +501,8 @@ def get_diagram_builders() -> list[str]:
 
 
 def generate_code():
-    code = get_imports()
+    imports = ["from collimator import DiagramBuilder"] + list(__IMPORTS__)
+    code = sorted(imports)
     code.append("")
     code.extend(c for c in get_diagram_builders())
     code.append("")

@@ -21,9 +21,10 @@ import collimator
 
 from collimator.library import Integrator
 from collimator.logging import logger
-
 from collimator import logging
+from collimator.testing.markers import skip_if_not_jax
 
+skip_if_not_jax()
 pytestmark = pytest.mark.slow
 
 

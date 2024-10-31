@@ -22,7 +22,6 @@ from .graph_utils import (
 from .equation_utils import (
     extract_vars,
     process_equations,
-    compute_consistent_initial_conditions,
 )
 
 __all__ = [
@@ -34,5 +33,4 @@ __all__ = [
     "draw_bipartite_graph",
     "extract_vars",
     "process_equations",
-    "compute_consistent_initial_conditions",
 ]

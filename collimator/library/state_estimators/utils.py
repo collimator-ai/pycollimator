@@ -222,6 +222,8 @@ def linearize_and_discretize_continuous_plant(
     """
     y_eq, linear_plant = linearize_plant(plant, x_eq, u_eq)
 
+    linear_plant.create_context()
+
     A, B, C, D = linear_plant.A, linear_plant.B, linear_plant.C, linear_plant.D
 
     nx, nu = B.shape

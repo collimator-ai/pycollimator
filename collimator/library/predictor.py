@@ -71,6 +71,8 @@ class PyTorch(LeafSystem):
             batch dimension.
     """
 
+    EXTRA_FILES = {}
+
     @parameters(
         static=[
             "file_name",
@@ -131,15 +133,8 @@ class PyTorch(LeafSystem):
         )
 
         self.add_batch_dim_to_inputs = add_batch_dim_to_inputs
-
-        _, ext = os.path.splitext(file_name)
-
-        if ext == ".pt":
-            self.model_format = "TorchScript"
-            self.model = torch.jit.load(file_name)
-            self.model.eval()
-        else:
-            raise ValueError(f"Expected extension of file is `.pt`, but found {ext}")
+        self.model = torch.jit.load(file_name)
+        self.model.eval()
 
     def initialize_static_data(self, context):
         """Infer the output shapes and dtypes of the ML model."""

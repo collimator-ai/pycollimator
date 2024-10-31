@@ -12,6 +12,7 @@
 
 from .backend import (
     DEFAULT_BACKEND,
+    REQUESTED_BACKEND,
     IS_JAXLITE,
     dispatcher,
     asarray,
@@ -40,6 +41,7 @@ numpy_api = dispatcher
 
 __all__ = [
     "DEFAULT_BACKEND",
+    "REQUESTED_BACKEND",
     "IS_JAXLITE",
     "dispatcher",
     "asarray",

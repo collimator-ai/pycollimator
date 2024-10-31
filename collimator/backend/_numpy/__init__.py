@@ -22,6 +22,7 @@ from .python_functions import (
     jit,
     astype,
     interp2d,
+    switch,
 )
 from .ode_solver import ODESolver
 from .results_data import NumpyResultsData
@@ -47,6 +48,7 @@ numpy_functions = {
     "pure_callback": callback,
     "ODESolver": ODESolver,
     "interp2d": interp2d,
+    "switch": switch,
 }
 
 numpy_constants = {

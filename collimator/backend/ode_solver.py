@@ -24,7 +24,12 @@ if TYPE_CHECKING:
 __all__ = [
     "ODESolverOptions",
     "ODESolverBase",
+    "ODESolverError",
 ]
+
+
+class ODESolverError(RuntimeError):
+    pass
 
 
 @dataclasses.dataclass
@@ -40,6 +45,7 @@ class ODESolverOptions:
     max_step_size: float = None
     method: str = "auto"  # Dopri5 (jax/scipy) or BDF (jax)
     enable_autodiff: bool = False
+    max_checkpoints: int = None  # Only used for checkpointing in autodiff
 
 
 @dataclasses.dataclass
@@ -94,6 +100,7 @@ class ODESolverBase(metaclass=abc.ABCMeta):
     min_step_size: float = None
     method: str = "auto"
     enable_autodiff: bool = False
+    max_checkpoints: int = None  # Used for checkpointing in adjoint mode
 
     supports_mass_matrix: bool = False
 
@@ -103,6 +110,11 @@ class ODESolverBase(metaclass=abc.ABCMeta):
 
     def __post_init__(self):
         self._finalize()
+
+        if self.enable_autodiff and self.max_checkpoints % 2 != 0:
+            # Make sure max_checkpoints is even to allow the recursive checkpointing
+            # to subdivide the array evenly
+            raise ValueError("`max_checkpoints` must be an even number.")
 
         # Check that if the system contains a non-trivial mass matrix (including a
         # semi-explicit index-1 DAE specified with singular mass matrix), then the

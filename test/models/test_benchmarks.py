@@ -15,7 +15,6 @@ import pytest
 import jax.numpy as jnp
 import numpy as np
 
-import collimator
 from collimator.framework import DiagramBuilder
 from collimator.library.generic import FeedthroughBlock
 from collimator.library.primitives import (
@@ -25,7 +24,7 @@ from collimator.library.primitives import (
     Gain,
     Integrator,
 )
-from collimator.testing import make_benchmark
+from collimator.testing import make_benchmark, set_backend
 
 pytestmark = pytest.mark.minimal
 
@@ -164,30 +163,29 @@ def _make_benchmark_bouncing_ball(
         tf,
         rtol=rtol,
         atol=atol,
-        use_simulator=True,
         run_once=run_once,
     )
 
 
 def test_benchmark_pendulum_leaf():
-    collimator.set_backend("jax")
+    set_backend("jax")
     benchmark_pendulum = _make_benchmark_pendulum()
     benchmark_pendulum()
 
 
 def test_benchmark_pendulum_primitives():
-    collimator.set_backend("jax")
+    set_backend("jax")
     benchmark_pendulum_diagram = _make_benchmark_pendulum_diagram()
     benchmark_pendulum_diagram()
 
 
 def test_benchmark_lotka_volterra():
-    collimator.set_backend("jax")
+    set_backend("jax")
     benchmark_lotka_volterra = _make_benchmark_lotka_volterra()
     benchmark_lotka_volterra()
 
 
 def test_benchmark_fitzhugh_nagumo():
-    collimator.set_backend("jax")
+    set_backend("jax")
     benchmark_fitzhugh_nagumo = _make_benchmark_fitzhugh_nagumo()
     benchmark_fitzhugh_nagumo()

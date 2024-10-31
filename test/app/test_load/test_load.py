@@ -17,7 +17,6 @@ import subprocess as sp
 import collimator
 import pathlib
 import matplotlib.pyplot as plt
-from collimator.backend import numpy_api as cnp
 
 pytestmark = pytest.mark.app
 
@@ -88,7 +87,13 @@ def test_impact_detection_results(show_plot=False):
         plt.show()
 
 
+def test_goto_from():
+    testdir = pathlib.Path(__file__).parent
+    model = collimator.load_model(testdir, model="goto_from.json")
+    model.simulate(stop_time=1.0)
+
+
 if __name__ == "__main__":
     # test_simset()
-    cnp.set_backend("numpy")
-    test_impact_detection_results(show_plot=True)
+    # test_impact_detection_results(show_plot=True)
+    test_goto_from()

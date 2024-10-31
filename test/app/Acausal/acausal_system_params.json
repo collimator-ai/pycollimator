@@ -1134,7 +1134,7 @@
           {
             "uuid": "68fddf9a-541f-42c9-b2cd-0d43d2d98f4a",
             "name": "ThermalResistor_0",
-            "type": "acausal.thermal.ThermalInsulator",
+            "type": "acausal.thermal.Insulator",
             "inputs": [
               {
                 "name": "port_a",

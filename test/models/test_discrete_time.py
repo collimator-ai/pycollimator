@@ -44,7 +44,7 @@ class TestScalarSystem:
     def test_manual_update(self):
         # Instantiate the System
         model = SimpleDiscreteTimeSystem()
-
+        model.create_context()
         # One state update event, one output update event
         assert model.periodic_events.num_events == 2
 

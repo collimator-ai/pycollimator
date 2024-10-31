@@ -212,11 +212,11 @@ def _wc_to_cl_parameters(block: SystemBase) -> dict[str, Parameter]:
     # Following blocks are instances of LTISystem so we want to ignore A, B, C, D
     # TFDiscrete is not an instance of LTISystem, but needs the same treatment as TF.
     if isinstance(block, PID):
-        kp = str(block.dynamic_parameters["kp"])
-        ki = str(block.dynamic_parameters["ki"])
-        kd = str(block.dynamic_parameters["kd"])
-        n = str(block.dynamic_parameters["n"])
-        initial_state = str(block.dynamic_parameters["initial_state"])
+        kp = str(block.parameters["kp"])
+        ki = str(block.parameters["ki"])
+        kd = str(block.parameters["kd"])
+        n = str(block.parameters["n"])
+        initial_state = str(block.parameters["initial_state"])
         return {
             "Kp": Parameter(value=kp),
             "Ki": Parameter(value=ki),
@@ -317,20 +317,24 @@ def _get_ref_submodel_uuid(node: WildcatDiagram) -> str:
 
 def _wc_to_cl_block(node: SystemBase) -> Node:
     block_type = _get_block_type(node)
+    parameters = _wc_to_cl_parameters(node)
 
     if block_type is None:
-        raise NotImplementedError(
-            f"Block type {node.__class__.__name__} is not supported"
+        block_type = "core.CustomLeafSystem"
+        file_path = node.__class__.__module__.replace(".", "/")
+        file_path = f"{file_path}.py"
+        parameters["file_path"] = Parameter(value=file_path, is_string=True)
+        parameters["class_name"] = Parameter(
+            value=node.__class__.__name__, is_string=True
         )
 
-    parameters = _wc_to_cl_parameters(node)
     time_mode = time_mode = (
         parameters.pop("time_mode").value if "time_mode" in parameters else None
     )
 
     return Node(
         name=node.name,
-        type=_get_block_type(node),
+        type=block_type,
         inputs=_wc_to_cl_iports(node),
         outputs=_wc_to_cl_oports(node),
         parameters=parameters,

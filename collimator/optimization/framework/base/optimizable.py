@@ -18,6 +18,7 @@ Once created, the optimizables can be passed to an optimizer instance for optimi
 
 from typing import Optional
 from abc import ABC, abstractmethod
+import dataclasses
 from dataclasses import dataclass, field
 import warnings
 
@@ -139,6 +140,8 @@ class OptimizableBase(ABC):
             values for all the array members is expected.
         seed: int
             Seed for any necessary randomization.
+        sim_options: SimulatorOptions
+            Options for the simulator that will be used in the optimization loop.
     """
 
     def __init__(
@@ -151,6 +154,7 @@ class OptimizableBase(ABC):
         transformation,
         init_min_max,
         seed,
+        sim_options=None,
     ):
         self.diagram = diagram
         self.base_context = base_context
@@ -158,17 +162,23 @@ class OptimizableBase(ABC):
         self.start_time, self.stop_time = sim_t_span
 
         # Create simulator
-        max_major_steps = estimate_max_major_steps(
-            diagram,
-            sim_t_span,
-        )
+        if sim_options is None:
+            sim_options = {}
+        else:
+            sim_options = dataclasses.asdict(sim_options)
+            sim_options.pop("enable_autodiff", None)  # will be hard set to True
+
+        max_major_steps = sim_options.pop("max_major_steps", None)
+        if max_major_steps is None:
+            max_major_steps = estimate_max_major_steps(
+                diagram,
+                sim_t_span,
+            )
 
         options = SimulatorOptions(
             enable_autodiff=True,
             max_major_steps=max_major_steps,
-            max_major_step_length=0.01,  # autodiff breaks with large step lengths
-            # rtol=1e-08,
-            # atol=1e-08,
+            **sim_options,
         )
         self.simulator = Simulator(diagram, options=options)
 
@@ -190,7 +200,9 @@ class OptimizableBase(ABC):
         self.num_optvars = self.params_0_flat.size
 
         # key for any randomization
-        self.key = jr.PRNGKey(np.random.randint(0, 2**32) if seed is None else seed)
+        self.key = jr.PRNGKey(
+            np.random.randint(0, 2**32, dtype=np.int64) if seed is None else seed
+        )
 
         # bounds for optimization
         self.bounds = bounds
@@ -271,6 +283,7 @@ class Optimizable(OptimizableBase):
         transformation=None,
         init_min_max=None,
         seed=None,
+        sim_options=None,
     ):
         super().__init__(
             diagram,
@@ -281,6 +294,7 @@ class Optimizable(OptimizableBase):
             transformation,
             init_min_max,
             seed,
+            sim_options,
         )
         self.batched_objective = jax.jit(jax.vmap(self.objective, in_axes=(0,)))
         self.batched_objective_flat = jax.jit(
@@ -362,6 +376,7 @@ class OptimizableWithStochasticVars(OptimizableBase):
         bounds=None,
         transformation=None,
         seed=None,
+        sim_options=None,
     ):
         super().__init__(
             diagram,
@@ -372,6 +387,7 @@ class OptimizableWithStochasticVars(OptimizableBase):
             transformation,
             init_min_max=None,
             seed=seed,
+            sim_options=sim_options,
         )
 
         if vars_0 is None:

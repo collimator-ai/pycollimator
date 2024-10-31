@@ -61,6 +61,7 @@ class TestDerivativeDiscrete:
         dt = 0.1
         block = library.DerivativeDiscrete(dt)
         block.initialize()
+        block.create_dependency_graph()
         assert block.get_feedthrough() == [(0, 0)]
 
     def test_discrete_derivative_sine(self, show_plot=False):
@@ -302,12 +303,15 @@ class TestFilterDiscrete:
         b = np.ones(filter_N) / filter_N
         block = library.FilterDiscrete(dt, b_coefficients=b)
         block.initialize(b_coefficients=b)
+        block.create_dependency_graph()
         assert block.is_feedthrough
         assert block.get_feedthrough() == [(0, 0)]
 
         # Not feedthrough if b[0] = 0
         b[0] = 0.0
         block = library.FilterDiscrete(dt, b_coefficients=b)
+        block.initialize(b_coefficients=b)
+        block.create_dependency_graph()
         assert not block.is_feedthrough
         assert block.get_feedthrough() == []
 
@@ -396,11 +400,15 @@ class TestIntegratorDiscrete:
     def test_feedthrough(self):
         dt = 0.1
         block = library.IntegratorDiscrete(dt, 0.0)
+        block.initialize(0.0)
+        block.create_dependency_graph()
         assert block.get_feedthrough() == []
 
         # If the integrator has reset, it will be feedthrough
         # from the reset trigger to the output
         block = library.IntegratorDiscrete(dt, 0.0, enable_reset=True)
+        block.initialize(0.0, enable_reset=True)
+        block.create_dependency_graph()
         assert block.get_feedthrough() == [(1, 0)]
 
         # If external resets are also enabled, it is feedthrough
@@ -408,6 +416,8 @@ class TestIntegratorDiscrete:
         block = library.IntegratorDiscrete(
             dt, 0.0, enable_reset=True, enable_external_reset=True
         )
+        block.initialize(0.0, enable_reset=True, enable_external_reset=True)
+        block.create_dependency_graph()
         assert block.get_feedthrough() == [(1, 0), (2, 0)]
 
     @pytest.mark.parametrize("x0,dtype", scalar_testdata)
@@ -678,6 +688,7 @@ class TestPIDDiscrete:
     def test_feedthrough(self):
         dt = 0.1
         block = library.PIDDiscrete(dt)
+        block.create_dependency_graph()
         assert block.get_feedthrough() == [(0, 0)]
 
     def _test_open_loop(self, kp=0.0, ki=0.0, kd=0.0, dt=0.1):
@@ -811,9 +822,11 @@ class TestTransferFunctionDiscrete:
         dt = 0.1
         block = library.TransferFunctionDiscrete(dt, num=[2], den=[1])
         block.initialize(num=[2], den=[1])
+        block.create_dependency_graph()
         assert block.get_feedthrough() == [(0, 0)]
 
         block.initialize(num=[0.1], den=[1, -1])
+        block.create_dependency_graph()
         assert block.get_feedthrough() == []
 
     def test_transfer_function_discrete(self, show_plot=False):
@@ -914,10 +927,12 @@ class TestLTISystemDiscrete:
         )
         block = library.LTISystemDiscrete(A, B, C, D, dt)
         block.initialize(A=A, B=B, C=C, D=D)
+        block.create_dependency_graph()
         assert block.get_feedthrough() == [(0, 0)]
 
         D = jnp.array([[0.0]])
         block.initialize(A=A, B=B, C=C, D=D)
+        block.create_dependency_graph()
         assert block.get_feedthrough() == []
 
     @pytest.mark.parametrize(
@@ -987,6 +1002,7 @@ class TestUnitDelay:
         dt = 0.1
         block = library.UnitDelay(dt, 0.0)
         block.initialize(initial_state=0.0)
+        block.create_dependency_graph()
         assert block.get_feedthrough() == []
 
     def test_unit_delay_scalar(self):
@@ -1288,6 +1304,7 @@ class TestRateLimiter:
     def test_feedthrough(self):
         dt = 0.1
         block = library.RateLimiter(dt)
+        block.create_dependency_graph()
         assert block.get_feedthrough() == [(0, 0)]
 
     def test_rate_limiter_scalar(self, show_plot=False):

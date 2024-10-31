@@ -24,6 +24,7 @@ import numpy as np
 
 import collimator
 from collimator import backend
+from collimator.backend import numpy_api as cnp
 from collimator.logging import logger
 from collimator.experimental import AcausalCompiler, AcausalDiagram, EqnEnv
 from collimator.framework import (
@@ -128,6 +129,11 @@ def load_model(
 
     model = model_json.Model.from_dict(model_json_obj)
 
+    # MUST be set before diagram creation and param eval
+    if model.configuration.numerical_backend == "auto":
+        model.configuration.numerical_backend = cnp.active_backend
+    collimator.set_backend(model.configuration.numerical_backend)
+
     model_parameters_json = model.parameters
     if model_parameter_overrides:
         model_parameters_json.update(model_parameter_overrides)
@@ -159,6 +165,15 @@ def load_model(
             # we don't need those in the namespace
             init_script_namespace.pop("__builtins__")
 
+            # check if the init script overwrites model parameters
+            for param_name, param in model_parameters_py.items():
+                init_script_param = init_script_namespace.get(param_name, None)
+                if init_script_param != param:
+                    logger.warning(
+                        "Init script tried to change value of model parameter '%s'. This change will NOT apply.",
+                        param_name,
+                    )
+
     model_parameters = {}
     for param_name, param in model_parameters_py.items():
         if (
@@ -170,15 +185,12 @@ def load_model(
             model_parameters[param_name] = Parameter(name=param_name, value=param)
 
     root_namespace = namespace
-    root_namespace.update(model_parameters)
+    # order is important because we don't want the init script to overwrite
+    # model parameters
     root_namespace.update(init_script_namespace)
+    root_namespace.update(model_parameters)
 
     root_id = "root"
-
-    # MUST be set before diagram creation
-    if model.configuration.numerical_backend == "auto":
-        model.configuration.numerical_backend = backend.active_backend
-    collimator.set_backend(model.configuration.numerical_backend)
 
     # traverse the entire model, and extract the blocks/links/etc.
     # of each acausal network.
@@ -270,11 +282,13 @@ def eval_parameter(value: str, _globals: dict, _locals: dict):
         return p
 
     p = eval(value, _globals, _locals)
+    # NOTE: Implicit casting is not generalizable to some blocks, e.g. Sindy
+    # poly_order param expects an integer, but this will convert it to a float.
     # Rules for user-input parameters:
     # - if explicitly given as an array with dtype, use that dtype
-    # - if boolean, use as given
+    # - if boolean or dict, use as given
     # - otherwise, convert to a numpy array
-    if not hasattr(p, "dtype") and not isinstance(p, bool):
+    if not hasattr(p, "dtype") and not isinstance(p, (bool, dict)):
         p = np.array(p)
         # if the array has integer dtype convert to float. Note that
         # this case will still not be reached if the parameter is explicitly
@@ -464,7 +478,7 @@ def register_reference_submodel(ref_id: str, model: model_json.Model):
     def _make_subdiagram_instance(
         instance_name: str,
         parameters,
-        uuid: str = None,
+        uuid: str | None = None,
         parent_path: list[str] = None,
         parent_ui_id_path: list[str] = None,
         record_mode: str = "selected",
@@ -573,6 +587,13 @@ def make_subdiagram(
     exported_inputs: list[str] = []
     exported_outputs: list[str] = []
 
+    # Goto/From blocks are considered as different ways of drawing links.
+    # These blocks are collected here, and once all blocks and links are processed,
+    # new links are added to the diagram to effect the connection defined by the
+    # sets of Goto/From blocks.
+    goto_blocks = {}  # block uuid to signal name
+    from_blocks = {}  # block uuid to signal name
+
     # needed for dereferencing node ids in link specs. this map is local to a
     # canvas.
     block_uuid_to_name: dict[str, str] = {}
@@ -595,7 +616,7 @@ def make_subdiagram(
         acausal_system = build_acausal_system(
             acausal_network,
             namespace_params,
-            name=".".join(["root"] + parent_path + ["acausal_system"]),
+            name="_".join(["root"] + parent_path + ["acausal_system"]),
             parent_path=parent_path,
             parent_ui_id_path=parent_ui_id_path,
         )
@@ -626,6 +647,14 @@ def make_subdiagram(
             exported_inputs.append(block_name)
         elif block_spec.type == "core.Outport":
             exported_outputs.append(block_name)
+        elif block_spec.type == "core.Goto":
+            goto_signal_name = block_spec.parameters["signal"].value
+            goto_blocks[block_spec.uuid] = goto_signal_name
+            continue
+        elif block_spec.type == "core.From":
+            goto_signal_name = block_spec.parameters["signal"].value
+            from_blocks[block_spec.uuid] = goto_signal_name
+            continue
 
         is_phealf_block = False
 
@@ -817,6 +846,49 @@ def make_subdiagram(
             blocks[output_port_id_key].output_ports[0], name=outport_name
         )
 
+    # find the links associated with Goto and From blocks
+    # so that eventually we have a maps like:
+    #   signal_name->(src_node,src_port)
+    #   signal_name->list[(dst_node,dst_port)]
+    goto_src_map = {}
+    from_dst_map = {}
+    goto_from_links = []
+    if goto_blocks:
+        for link in diagram.links:
+            if not link.dst or not link.src:
+                continue
+            if link.dst.node in goto_blocks.keys():
+                # this makes the map: signal_name->(src_node,src_port)
+                signal_name = goto_blocks[link.dst.node]
+                goto_src_map[signal_name] = (
+                    link.src.node,
+                    int(link.src.port),
+                )
+                # take note that this link will not create a wildcat diagram connection
+                goto_from_links.append(link.uuid)
+            if link.src.node in from_blocks.keys():
+                # this makes the map: signal_name->list[(dst_node,dst_port)]
+                signal_name = from_blocks[link.src.node]
+                dst_tuple = (link.dst.node, int(link.dst.port))
+                if signal_name in from_dst_map.keys():
+                    from_dst_map[from_blocks[link.src.node]].append(dst_tuple)
+                else:
+                    from_dst_map[from_blocks[link.src.node]] = [dst_tuple]
+                # take note that this link will not create a wildcat diagram connection
+                goto_from_links.append(link.uuid)
+
+        # finally run through all the From block destinations, and connect them to their
+        # corresponding Goto block sources
+        for signal_name, dst_list in from_dst_map.items():
+            src_node, src_port_index = goto_src_map[signal_name]
+            src_block_name = block_uuid_to_name[src_node]
+            for dst_node, dst_port_index in dst_list:
+                dst_block_name = block_uuid_to_name[dst_node]
+                builder.connect(
+                    blocks[src_block_name].output_ports[src_port_index],
+                    blocks[dst_block_name].input_ports[dst_port_index],
+                )
+
     for link in diagram.links:
         if (
             (link.src is None)
@@ -824,6 +896,7 @@ def make_subdiagram(
             or (link.src.node not in block_uuid_to_name)
             or (link.dst.node not in block_uuid_to_name)
             or link.uuid in acausal_links.keys()  # handled in build_acausal_system()
+            or link.uuid in goto_from_links  # handled above
         ):
             continue
 
@@ -1247,6 +1320,9 @@ def simulation_settings(
     else:
         raise ValueError(f"Unsupported solver method: {config.solver.method}")
 
+    # FIXME: Rename to max_checkpoints
+    max_checkpoints = config.solver.max_checkpoints
+
     numerical_backend = config.numerical_backend or "auto"
     if numerical_backend not in ["auto", "numpy", "jax"]:
         raise ValueError(f"Unsupported numerical backend: {config.numerical_backend}")
@@ -1265,6 +1341,7 @@ def simulation_settings(
         max_major_step_length=config.sample_time,
         min_minor_step_size=config.solver.min_step,
         max_minor_step_size=config.solver.max_step,
+        max_checkpoints=max_checkpoints,
         atol=config.solver.absolute_tolerance,
         rtol=config.solver.relative_tolerance,
         ode_solver_method=method,

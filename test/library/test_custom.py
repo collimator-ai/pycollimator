@@ -10,7 +10,10 @@
 # Affero General Public License along with this program. If not, see
 # <https://www.gnu.org/licenses/>.
 
+import logging
 import pytest
+
+from jaxlib.xla_extension import XlaRuntimeError
 
 import numpy as np
 import jax.numpy as jnp
@@ -19,6 +22,7 @@ import collimator
 from collimator import library
 from collimator.library.custom import PythonScriptError
 from collimator.backend import numpy_api
+from collimator.testing.markers import requires_jax
 
 # from collimator import logging
 # logging.set_file_handler("test.log")
@@ -79,9 +83,7 @@ out_0 = count
 """
 
 
-def _test_relay(diagram, tf, dt, backend="jax"):
-    numpy_api.set_backend(backend)
-
+def _test_relay(diagram, tf, dt):
     context = diagram.create_context()
 
     recorded_signals = {
@@ -170,19 +172,21 @@ def _make_jax_relay_diagram(dt, reverse_psb_order=False, implicit=False):
     return builder.build()
 
 
+@requires_jax()
 @pytest.mark.minimal
 def test_custom_relay_traceable():
+    numpy_api.set_backend("jax")
     dt = 0.1
 
     diagram = _make_jax_relay_diagram(dt=dt, reverse_psb_order=False)
-    t1, sol1 = _test_relay(diagram, tf=2.0, dt=dt, backend="jax")
+    t1, sol1 = _test_relay(diagram, tf=2.0, dt=dt)
 
     # Test adding the blocks in the reverse order
     # see https://collimator.atlassian.net/browse/WC-66 for a description
     # of the bug this tests
 
     diagram = _make_jax_relay_diagram(dt=dt, reverse_psb_order=True)
-    t2, sol2 = _test_relay(diagram, tf=2.0, dt=dt, backend="jax")
+    t2, sol2 = _test_relay(diagram, tf=2.0, dt=dt)
 
     assert jnp.allclose(t1, t2)
     assert jnp.allclose(sol1["sin.out_0"], sol2["sin.out_0"])
@@ -220,8 +224,8 @@ def test_custom_agnostic(use_jax):
     builder.connect(source.output_ports[0], agnostic_psb.input_ports[0])
 
     diagram = builder.build()
-    assert not diagram.has_ode_side_effects
     context = diagram.create_context()
+    assert not diagram.has_ode_side_effects
 
     recorded_signals = {
         "psb.out_0": agnostic_psb.output_ports[0],
@@ -249,7 +253,114 @@ def test_custom_fail_compile():
     )
 
     with pytest.raises(PythonScriptError):
-        block.create_context()
+        ctx = block.create_context()
+        block.check_types(ctx)
+
+
+@pytest.mark.minimal
+@pytest.mark.parametrize("use_jax", [True, False])
+@pytest.mark.parametrize("ui_id", [None, "e7465c47-15ef-4c0a-8bab-e0446b22f98d"])
+@pytest.mark.parametrize("time_mode", ["discrete", "agnostic"])
+def test_custom_fail_init(caplog, use_jax: bool, ui_id: str | None, time_mode: str):
+    # This check validates that errors happening inside a PythonScript block's
+    # init_script are properly bubbled up for both notebooks and the UI.
+    # For the UI, we want to explicitly print the original exception with a clean
+    # backtrace in the logs.
+
+    caplog.set_level(logging.ERROR)
+
+    init_code = """
+def fun():
+    def crash():
+        raise ValueError("This is a crash")
+    crash()
+fun()
+"""
+
+    dt = 0.1 if time_mode == "discrete" else None
+    klass = library.CustomJaxBlock if use_jax else library.CustomPythonBlock
+
+    with pytest.raises(PythonScriptError) as e:
+        block = klass(
+            name="BlockThatWillFailAtInit",
+            dt=dt,
+            time_mode=time_mode,
+            init_script=init_code,
+            user_statements="raise RuntimeError('Invalid error occurred')",
+            inputs=[],
+            outputs=["out_0"],
+            ui_id=ui_id,
+        )
+        ctx = block.create_context()
+        block.check_types(ctx)
+
+    assert "This is a crash" in str(e.value)
+    assert "BlockThatWillFailAtInit" in str(e.value)
+
+    if ui_id is not None:
+        assert "ValueError: This is a crash" in caplog.text
+        assert (
+            """  File "<init>", line 5, in fun
+  File "<init>", line 4, in crash"""
+            in caplog.text
+        )
+        # assert "BlockThatWillFailAtInit" in caplog.text
+
+
+@pytest.mark.minimal
+@pytest.mark.parametrize("use_jax", [True, False])
+@pytest.mark.parametrize("ui_id", [None, "e7465c47-15ef-4c0a-8bab-e0446b22f98d"])
+@pytest.mark.parametrize("time_mode", ["discrete", "agnostic"])
+def test_custom_fail_step(caplog, use_jax: bool, ui_id: str | None, time_mode: str):
+    # This check validates that errors happening inside a PythonScript block's
+    # user_statements are properly bubbled up for both notebooks and the UI.
+    # For the UI, we want to explicitly print the original exception with a clean
+    # backtrace in the logs.
+
+    caplog.set_level(logging.ERROR)
+
+    init_code = """
+def fun():
+    def crash():
+        raise ValueError("This is a crash")
+    crash()
+
+out_0 = 0.0
+"""
+
+    step_code = "fun()"
+
+    dt = 0.1 if time_mode == "discrete" else None
+    klass = library.CustomJaxBlock if use_jax else library.CustomPythonBlock
+
+    with pytest.raises((PythonScriptError, XlaRuntimeError)) as e:
+        block = klass(
+            name="BlockThatWillFailAtStep",
+            dt=dt,
+            time_mode=time_mode,
+            init_script=init_code,
+            user_statements=step_code,
+            inputs=[],
+            outputs=["out_0"],
+            ui_id=ui_id,
+        )
+        ctx = block.create_context()
+        collimator.simulate(
+            block, ctx, (0.0, 1.0), recorded_signals={"x": block.output_ports[0]}
+        )
+
+    assert "This is a crash" in str(e.value)
+    assert "BlockThatWillFailAtStep" in str(e.value)
+
+    if ui_id is not None:
+        assert "ValueError: This is a crash" in caplog.text
+        assert (
+            """  File "<step>", line 1, in <module>
+  File "<init>", line 5, in fun
+  File "<init>", line 4, in crash"""
+            in caplog.text
+        )
+        # assert "BlockThatWillFailAtStep" in caplog.text
 
 
 def _make_python_relay_diagram(dt, reverse_psb_order=False, implicit=False):
@@ -305,18 +416,21 @@ def _make_python_relay_diagram(dt, reverse_psb_order=False, implicit=False):
 # Repeat using untraceable Python (standard control flow)
 @pytest.mark.slow
 def test_custom_relay_untraceable():
+    numpy_api.set_backend("numpy")
     dt = 0.1
 
     diagram = _make_python_relay_diagram(dt=dt, reverse_psb_order=False)
+    diagram.create_context()
     assert not diagram.has_ode_side_effects
-    t1, sol1 = _test_relay(diagram, tf=2.0, dt=dt, backend="numpy")
+    t1, sol1 = _test_relay(diagram, tf=2.0, dt=dt)
 
     # Test adding the blocks in the reverse order
     # see https://collimator.atlassian.net/browse/WC-66 for a description
     # of the bug this tests
     diagram = _make_python_relay_diagram(dt=dt, reverse_psb_order=True)
+    diagram.create_context()
     assert not diagram.has_ode_side_effects
-    t2, sol2 = _test_relay(diagram, tf=2.0, dt=dt, backend="numpy")
+    t2, sol2 = _test_relay(diagram, tf=2.0, dt=dt)
 
     assert jnp.allclose(t1, t2)
     assert jnp.allclose(sol1["sin.out_0"], sol2["sin.out_0"])
@@ -400,6 +514,7 @@ def _test_counter(diagram, tf, show_plot=False):
     assert np.allclose(gain_res, 2 * counter_res)
 
 
+@requires_jax()
 @pytest.mark.minimal
 def test_custom_counter(show_plot=False):
     numpy_api.set_backend("jax")
@@ -515,7 +630,9 @@ def test_wc159(use_jax):
 
     assert np.allclose(out_0[0], y_init)
     assert np.allclose(out_0[1:], y_step)
-    assert out_0.dtype == int
+    # Make sure we get a int64 on all platforms
+    # assert out_0.dtype == int  # on windows we could get int64 != int
+    assert np.iinfo(out_0.dtype).bits == 64
 
 
 def test_wc230():
@@ -630,9 +747,9 @@ def test_custom_reuse_outport_state(use_jax):
         outputs=["out_0"],
     )
 
+    context = system.create_context()
     assert not system.has_ode_side_effects
 
-    context = system.create_context()
     recorded_signals = {
         "system.out_0": system.output_ports[0],
     }
@@ -727,10 +844,8 @@ class TestFeedthroughSideEffects:
         # See WC-209 bug report
         # Test that an untraceable feedthrough block can be used as the RHS of an ODE
         integrator = van_der_pol["integrator"]
-        van_der_pol.create_context()
-        assert van_der_pol.has_ode_side_effects
-
         context = van_der_pol.create_context()
+        assert van_der_pol.has_ode_side_effects
 
         recorded_signals = {
             "integrator.out_0": integrator.output_ports[0],

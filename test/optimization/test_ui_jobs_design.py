@@ -19,8 +19,15 @@ import platform
 import pytest
 import numpy as np
 
-from collimator import DiagramBuilder, Parameter
-from collimator.library import Adder, Constant, Gain, Integrator, Power
+from collimator import DiagramBuilder, Parameter, SimulatorOptions
+from collimator.library import (
+    Adder,
+    Constant,
+    Gain,
+    Integrator,
+    Power,
+    Clock,
+)
 from collimator.optimization import ui_jobs
 from collimator.optimization.framework.base.optimizable import (
     DesignParameter,
@@ -99,6 +106,8 @@ def test_optimization_unbounded():
         param_name="c", initial=0.5, min=-np.inf, max=np.inf
     )
 
+    sim_options = SimulatorOptions(max_major_steps=1)
+
     # Scipy with L-BFGS-B
     diagram, objective_port, _ = _make_diagram()
     opt_param, _ = ui_jobs.jobs_router(
@@ -110,9 +119,12 @@ def test_optimization_unbounded():
         sim_t_span=sim_t_span,
         objective_port=objective_port,
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     np.testing.assert_allclose(opt_param["c"], 1.65, atol=0.1)
+
+    sim_options = SimulatorOptions(max_major_steps=1)
 
     # Scipy Nelder-Mead
     diagram, objective_port, _ = _make_diagram()
@@ -125,9 +137,12 @@ def test_optimization_unbounded():
         sim_t_span=sim_t_span,
         objective_port=objective_port,
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     np.testing.assert_allclose(opt_param["c"], 1.65, atol=0.1)
+
+    sim_options = SimulatorOptions(max_major_steps=1)
 
     # Optax sgd
     diagram, objective_port, _ = _make_diagram()
@@ -140,9 +155,12 @@ def test_optimization_unbounded():
         sim_t_span=sim_t_span,
         objective_port=objective_port,
         print_every=200,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     np.testing.assert_allclose(opt_param["c"], 1.65, atol=0.1)
+
+    sim_options = SimulatorOptions(max_major_steps=1)
 
     # Evosax PSO
     diagram, objective_port, _ = _make_diagram()
@@ -155,6 +173,7 @@ def test_optimization_unbounded():
         sim_t_span=sim_t_span,
         objective_port=objective_port,
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     np.testing.assert_allclose(opt_param["c"], 1.65, atol=0.1)
@@ -167,6 +186,8 @@ def test_optimization_bounded():
     job_type = "design"
     design_parameters = DesignParameter(param_name="c", initial=0.5, min=0.0, max=1.62)
 
+    sim_options = SimulatorOptions(max_major_steps=1)
+
     # Scipy with L-BFGS-B
     diagram, objective_port, _ = _make_diagram()
     opt_param, _ = ui_jobs.jobs_router(
@@ -178,9 +199,12 @@ def test_optimization_bounded():
         sim_t_span=sim_t_span,
         objective_port=objective_port,
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     np.testing.assert_allclose(opt_param["c"], 1.62, atol=0.1)
+
+    sim_options = SimulatorOptions(max_major_steps=1)
 
     # Evosax with PSO
     diagram, objective_port, _ = _make_diagram()
@@ -193,6 +217,7 @@ def test_optimization_bounded():
         sim_t_span=sim_t_span,
         objective_port=objective_port,
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     np.testing.assert_allclose(opt_param["c"], 1.62, atol=0.01)
@@ -204,6 +229,8 @@ def test_optimization_constrained_scipy():
 
     job_type = "design"
     design_parameters = DesignParameter(param_name="c", initial=0.5, min=0.0, max=2.0)
+
+    sim_options = SimulatorOptions(max_major_steps=1)
 
     # Scipy SLSQP
     diagram, objective_port, constraint_port = _make_diagram()
@@ -217,6 +244,7 @@ def test_optimization_constrained_scipy():
         objective_port=objective_port,
         constraint_ports=[constraint_port],
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     np.testing.assert_allclose(opt_param["c"], 0.36, atol=0.1)
@@ -232,6 +260,8 @@ def test_optimization_constrained_nlopt():
     job_type = "design"
     design_parameters = DesignParameter(param_name="c", initial=0.5, min=0.0, max=2.0)
 
+    sim_options = SimulatorOptions(max_major_steps=1)
+
     # NLopt Direct
     diagram, objective_port, constraint_port = _make_diagram()
     opt_param, _ = ui_jobs.jobs_router(
@@ -244,6 +274,7 @@ def test_optimization_constrained_nlopt():
         objective_port=objective_port,
         constraint_ports=[constraint_port],
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     np.testing.assert_allclose(opt_param["c"], 0.36, atol=0.1)
@@ -263,27 +294,89 @@ def test_optimization_stochastic():
         distribution=Distribution(name="uniform", options={"min": 0.5, "max": 1.5}),
     )
 
+    sim_options = SimulatorOptions(max_major_steps=1)
+
     # Optax SGD
     diagram, objective_port, _ = _make_diagram()
     opt_param, _ = ui_jobs.jobs_router(
         job_type,
         diagram,
         algorithm="stochastic_gradient_descent",
-        options={"learning_rate": 0.01, "num_epochs": 300},
+        options={"learning_rate": 0.1, "num_epochs": 50},
         design_parameters=[design_parameters],
         stochastic_parameters=[stochastic_var],
         sim_t_span=sim_t_span,
         objective_port=objective_port,
-        print_every=100,
+        print_every=1,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
 
     np.testing.assert_allclose(opt_param["c"], 1.74, atol=0.2)
 
 
+@pytest.mark.slow
+def test_optimization_initial_state():
+    """Test for optimizing model parameters used as an initial_state."""
+    sim_t_span = (0.0, 2.0)
+
+    def _make_diagram_with_init_state():
+        """Clock connected to a double integrator with initial states set to c.
+        The objective is to minimize the squared error between the integrator
+        output and a constant 120.0. Meaning that the final value of the integrator
+        should be close to 120.0.
+        """
+        builder = DiagramBuilder()
+        c = Parameter(0.0)
+        Constant_0 = Constant(120.0)
+        builder.add(Constant_0)
+        Adder_0 = Adder(2, operators="+-")
+        builder.add(Adder_0)
+        Error = Power(2.0)
+        builder.add(Error)
+        Integrator_0 = Integrator(
+            c, lower_limit=-1.0, upper_limit=1.0, enable_external_reset=True
+        )
+        builder.add(Integrator_0)
+        Integrator_1 = Integrator(
+            c, lower_limit=-1.0, upper_limit=1.0, enable_external_reset=True
+        )
+        builder.add(Integrator_1)
+        Clock_0 = Clock()
+        builder.add(Clock_0)
+        builder.connect(Integrator_0.output_ports[0], Adder_0.input_ports[1])
+        builder.connect(Constant_0.output_ports[0], Adder_0.input_ports[0])
+        builder.connect(Adder_0.output_ports[0], Error.input_ports[0])
+        builder.connect(Integrator_1.output_ports[0], Integrator_0.input_ports[0])
+        builder.connect(Clock_0.output_ports[0], Integrator_1.input_ports[0])
+        return builder.build("root", parameters={"c": c}), Error.output_ports[0]
+
+    job_type = "design"
+    design_parameters = DesignParameter(
+        param_name="c", initial=0.0, min=-np.inf, max=np.inf
+    )
+
+    sim_options = SimulatorOptions(max_major_steps=1)
+
+    diagram, objective_port = _make_diagram_with_init_state()
+    opt_param, _ = ui_jobs.jobs_router(
+        job_type,
+        diagram,
+        algorithm="stochastic_gradient_descent",
+        options={"learning_rate": 0.1, "num_epochs": 2000},
+        design_parameters=[design_parameters],
+        sim_t_span=sim_t_span,
+        objective_port=objective_port,
+        print_every=200,
+        sim_options=sim_options,
+    )
+    print(f"{opt_param=}")
+    np.testing.assert_allclose(opt_param["c"], 39.5, atol=0.1)
+
+
 if __name__ == "__main__":
-    test_optimization_unbounded()
-    test_optimization_bounded()
-    test_optimization_constrained_scipy()
-    test_optimization_constrained_nlopt()
+    # test_optimization_unbounded()
+    # test_optimization_bounded()
+    # test_optimization_constrained_scipy()
+    # test_optimization_constrained_nlopt()
     test_optimization_stochastic()
