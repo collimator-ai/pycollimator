@@ -10,6 +10,8 @@
 # Affero General Public License along with this program. If not, see
 # <https://www.gnu.org/licenses/>.
 
+import pytest
+
 import collimator
 from collimator import DiagramBuilder, Simulator, SimulatorOptions
 from collimator.library import Sine
@@ -17,8 +19,9 @@ from collimator.library import Sine
 import jax
 
 
-def test_jax_dump_buffer():
-    collimator.set_backend("jax")
+@pytest.mark.parametrize("backend", ["numpy", "jax"])
+def test_jax_dump_buffer(backend):
+    collimator.set_backend(backend)
 
     builder = DiagramBuilder()
     sine = builder.add(Sine(name="SineWave_0"))
@@ -31,11 +34,13 @@ def test_jax_dump_buffer():
     )
     simulator = Simulator(diagram, options=options)
 
-    @jax.jit
     def _run_sim():
         context = diagram.create_context()
         results = simulator.advance_to(10, context)
         return results.results_data
+
+    if backend == "jax":
+        _run_sim = jax.jit(_run_sim)
 
     results1 = _run_sim()
     t1, _ = results1.finalize()

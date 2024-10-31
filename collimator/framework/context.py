@@ -58,7 +58,7 @@ import dataclasses
 
 from jax import tree_util
 
-from .parameter import Parameter
+from .error import StaticParameterError
 
 if TYPE_CHECKING:
     from ..backend.typing import (
@@ -81,21 +81,6 @@ __all__ = [
     "LeafContext",
     "DiagramContext",
 ]
-
-
-def _make_globals(env):
-    import numpy as np
-    import jax.numpy as jnp
-
-    _globals = {
-        "np": np,
-        "jnp": jnp,
-    }
-
-    if env is not None:
-        _globals.update(env)
-
-    return _globals
 
 
 @dataclasses.dataclass(frozen=True)
@@ -146,6 +131,12 @@ class ContextBase(metaclass=abc.ABCMeta):
         This should only be called on the root context, since it is expected that all
         subcontexts will have a time value of None to avoid any conflicts.
         """
+
+        # This looks really odd here, but this seems to be the most correct
+        # and efficient place to call the cache invalidation.
+        # FIXME: figure out where this actually belongs.
+        self.owning_system.invalidate_output_caches()
+
         return dataclasses.replace(self, time=value)
 
     @abc.abstractproperty
@@ -155,6 +146,11 @@ class ContextBase(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def with_state(self, state: State) -> ContextBase:
         """Create a copy of this context, replacing the entire state."""
+        pass
+
+    @abc.abstractmethod
+    def with_new_state(self) -> ContextBase:
+        """Create a copy of this context, replacing the state with a new state."""
         pass
 
     @abc.abstractproperty
@@ -208,21 +204,18 @@ class ContextBase(metaclass=abc.ABCMeta):
         return dataclasses.replace(self, is_initialized=True)
 
     @abc.abstractmethod
-    def with_parameter(self, name: str, value: Parameter | ArrayLike) -> ContextBase:
-        """Create a copy of this context, replacing the specified parameter."""
+    def with_updated_parameters(self) -> ContextBase:
+        """Create a copy of this context, updating all parameters to their current values."""
         pass
+
+    def with_parameter(self, name: str, value: ArrayLike) -> ContextBase:
+        """Create a copy of this context, replacing the specified parameter."""
+        return self.with_parameters({name: value})
 
     @abc.abstractmethod
-    def with_parameters(
-        self, new_parameters: Mapping[str, Parameter | ArrayLike]
-    ) -> ContextBase:
+    def with_parameters(self, new_parameters: Mapping[str, ArrayLike]) -> ContextBase:
         """Create a copy of this context, replacing only the specified parameters."""
         pass
-
-    def _replace_param(self, name: str, value: ArrayLike):
-        param = self.owning_system.dynamic_parameters[name]
-        param.set(value)
-        self.parameters[name] = param.get()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -312,16 +305,24 @@ class LeafContext(ContextBase):
             self, state=self.state.with_cached_value(index, value)
         )
 
-    def with_parameter(self, name: str, value: ArrayLike) -> ContextBase:
-        """Create a copy of this context, replacing the specified parameter."""
-        self._replace_param(name, value)
-        return dataclasses.replace(self, parameters=self.parameters)
+    def with_updated_parameters(self) -> ContextBase:
+        params = self.owning_system.dynamic_parameters
+        new_parameters = {}
+        for name, param in params.items():
+            new_parameters[name] = param.get()
+        return dataclasses.replace(self, parameters=new_parameters)
+
+    def with_new_state(self) -> ContextBase:
+        return dataclasses.replace(self, state=self.owning_system.create_state())
 
     def with_parameters(self, new_parameters: Mapping[str, ArrayLike]) -> ContextBase:
         """Create a copy of this context, replacing only the specified parameters."""
+        parameters = {**self.parameters}
         for name, value in new_parameters.items():
-            self._replace_param(name, value)
-        return dataclasses.replace(self, parameters=self.parameters)
+            param = self.owning_system.dynamic_parameters[name]
+            param.set(value)
+            parameters[name] = param.get()
+        return dataclasses.replace(self, parameters=parameters)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -447,30 +448,53 @@ class DiagramContext(ContextBase):
             )
         return dataclasses.replace(self, subcontexts=new_subcontexts)
 
-    def _compute_params(self):
-        new_subcontexts = self.subcontexts.copy()
+    def with_new_state(self) -> ContextBase:
+        new_subcontexts = OrderedDict()
         for system_id, subctx in self.subcontexts.items():
-            parameters = subctx.parameters
-            for name, param in subctx.owning_system.dynamic_parameters.items():
-                parameters[name] = param.get()
-        return new_subcontexts
+            new_subcontexts[system_id] = subctx.with_new_state()
+        return dataclasses.replace(self, subcontexts=new_subcontexts)
 
-    def with_parameter(self, name: str, value: ArrayLike) -> ContextBase:
-        """Create a copy of this context, replacing the specified parameter."""
-        self._replace_param(name, value)
-        new_subcontexts = self._compute_params()
+    def with_updated_parameters(self) -> ContextBase:
+        new_parameters = {
+            name: param.get()
+            for name, param in self.owning_system.dynamic_parameters.items()
+        }
+        new_subcontexts = {}
+        for k, v in self.subcontexts.items():
+            new_subcontexts[k] = v.with_updated_parameters()
+
         return dataclasses.replace(
-            self, parameters=self.parameters, subcontexts=new_subcontexts
+            self, subcontexts=new_subcontexts, parameters=new_parameters
         )
 
     def with_parameters(self, new_parameters: Mapping[str, ArrayLike]) -> ContextBase:
         """Create a copy of this context, replacing only the specified parameters."""
+        parameters = {**self.parameters}
+
+        # First validate that all parameters exist and are dynamic
         for name, value in new_parameters.items():
-            self._replace_param(name, value)
-        new_subcontexts = self._compute_params()
-        return dataclasses.replace(
-            self, parameters=self.parameters, subcontexts=new_subcontexts
-        )
+            if name not in self.owning_system.dynamic_parameters:
+                raise ValueError(
+                    f"Parameter {name} not found in {self.owning_system.name}"
+                )
+            param = self.owning_system.dynamic_parameters[name]
+
+            if param.static_dependents:
+                static_dependents = ", ".join(
+                    [f"{dep.system.name}" for dep in param.static_dependents]
+                )
+                raise StaticParameterError(
+                    f"Parameter {name} is used in static parameters"
+                    " and cannot be updated dynamically. Please create a new context."
+                    f" Static dependents in blocks: {static_dependents}"
+                )
+
+        for name, value in new_parameters.items():
+            self.owning_system.dynamic_parameters[name].set(value)
+            parameters[name] = value
+
+        context = dataclasses.replace(self, parameters=parameters)
+        return context.with_updated_parameters()
 
 
 #

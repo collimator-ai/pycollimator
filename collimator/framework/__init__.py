@@ -34,7 +34,8 @@ from .cache import (
     SystemCallback,
 )
 
-from .system_base import SystemBase, parameters
+from .system_base import SystemBase
+from .system_decorators import parameters, ports
 from .leaf_system import LeafSystem
 from .diagram_builder import DiagramBuilder
 from .diagram import Diagram
@@ -92,5 +93,6 @@ __all__ = [
     "DependencyTicket",
     "next_dependency_ticket",
     "parameters",
+    "ports",
     "build_recorder",
 ]

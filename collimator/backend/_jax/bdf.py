@@ -32,7 +32,12 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
-from .ode_solver_impl import ODESolverImpl, ODESolverState, norm
+from .ode_solver_impl import (
+    ODESolverImpl,
+    ODESolverState,
+    norm,
+    error_step_size_too_small,
+)
 from ..typing import Array
 from ...lazy_loader import LazyLoader, LazyModuleAccessor
 
@@ -170,9 +175,10 @@ COL_IDX = np.arange(MAX_ORDER + 3)
 
 def R_matrix(order, factor):
     # See Sec. 3.2 of Ref. [2] for the formula
+    # @am. this reference is wrong. section 3.2 of [2] has no equations.
     n = MAX_ORDER
-    i = ROW_IDX[1 : n + 1]
-    j = COL_IDX[1 : n + 1]
+    i = ROW_IDX[1 : n + 1]  # noqa
+    j = COL_IDX[1 : n + 1]  # noqa
     M = jnp.zeros((n + 1, n + 1))
     M = M.at[1:, 1:].set((i - 1 - factor * j) / i)
     M = M.at[0, :].set(1)
@@ -187,6 +193,7 @@ def R_matrix(order, factor):
 
 def _update_D(D, order, factor):
     # update D using equations in section 3.2 of Ref. [2]
+    # @am. this reference is wrong. section 3.2 of [2] has no equations.
     n = MAX_ORDER
     U = R_matrix(order, factor=1.0)
     R = R_matrix(order, factor)
@@ -249,8 +256,7 @@ class BDFSolver(ODESolverImpl):
             LU=LU,
         )
 
-        xc1 = self.predict(D, order=1)
-        return dataclasses.replace(state, y=xc1)
+        return state
 
     def predict(self, D, order) -> tuple[Array, Array]:
         # Predict new state value using the BDF formula
@@ -319,6 +325,7 @@ class BDFSolver(ODESolverImpl):
             (t_new, D, n_equal_steps, False),
         )
         h = t_new - t
+        error_step_size_too_small(t, h, boundary_time, self.enable_autodiff)
 
         # Update LU: `c` has changed (maybe)
         c = h / ALPHA[order]
@@ -434,7 +441,11 @@ class BDFSolver(ODESolverImpl):
         updated_jacobian = state.updated_jacobian
         safety = 0.9 * (2 * NEWTON_MAXITER + 1) / (2 * NEWTON_MAXITER + n_iter)
         scale = self.atol + self.rtol * jnp.abs(y_new)
+
+        # @am. scipy different. https://github.com/scipy/scipy/blob/b38dd830be86e57db8db2491310e90f5e7749dfc/scipy/integrate/_ivp/bdf.py#L388
+        # @am. scipy doesn't have the state.M.
         error = ERROR_CONST[state.order] * (state.M @ d)
+
         error_norm = norm(error / scale)
         opt_factor = jnp.maximum(
             MIN_FACTOR, safety * error_norm ** (-1 / (state.order + 1))
@@ -506,12 +517,11 @@ class BDFSolver(ODESolverImpl):
     def step(self, func, boundary_time, solver_state):
         # https://github.com/scipy/scipy/blob/v1.13.0/scipy/integrate/_ivp/bdf.py#L310-L324
         h = solver_state.dt
-        t = solver_state.t
         D = solver_state.D
         order = solver_state.order
         n_equal_steps = solver_state.n_equal_steps
         hmax = self.hmax
-        hmin = jnp.maximum(self.hmin, 10 * (jnp.nextafter(t, jnp.inf) - t))
+        hmin = self.hmin
         (h, D, n_equal_steps) = jax.tree.map(
             partial(jnp.where, h > hmax),
             (hmax, _update_D(D, order, hmax / h), 0),
@@ -541,9 +551,15 @@ class BDFSolver(ODESolverImpl):
             (solver_state, False, y, d, -1),
         )
 
+        # Occasionally floating point precision loss will mean that the next
+        # time step will be less than machine epsilon from the boundary time.
+        # In this case it's safe to assume that the boundary time has been reached.
+        t_new = solver_state.t + solver_state.dt
+        t_new = jnp.where(abs(t_new - boundary_time) < 10 * EPS, boundary_time, t_new)
+
         solver_state = dataclasses.replace(
             solver_state,
-            t=solver_state.t + solver_state.dt,
+            t=t_new,
             y=y_new,
             n_equal_steps=solver_state.n_equal_steps + 1,
         )

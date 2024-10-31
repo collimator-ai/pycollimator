@@ -12,6 +12,7 @@
 
 import copy
 from typing import TYPE_CHECKING
+import warnings
 from collimator.experimental.acausal.component_library.base import (
     Eqn,
     Sym,
@@ -20,7 +21,14 @@ from collimator.experimental.acausal.component_library.base import (
     EqnEnv,
 )
 from .acausal_diagram import AcausalDiagram
-from collimator.experimental.acausal.component_library.fluid_i import FluidProperties
+from collimator.experimental.acausal.component_library.base import nodpot_qty
+from collimator.experimental.acausal.component_library.fluid import (
+    FluidProperties,
+    M_FLOW_EPS,
+)
+from collimator.experimental.acausal.component_library.hydraulic import (
+    HydraulicProperties,
+)
 from collimator.experimental.acausal.error import (
     AcausalModelError,
     AcausalCompilerError,
@@ -31,18 +39,20 @@ from collimator.framework.system_base import Parameter
 
 if TYPE_CHECKING:
     import sympy as sp
+    import numpy as np
 else:
     sp = LazyLoader("sp", globals(), "sympy")
+    np = LazyLoader("np", globals(), "numpy")
 
 
 class DiagramProcessing:
     """
     This class transforms an AcausalDiagram object into a set of differential algebraic equations.
-    The output form this class is the input for index reduction.
+    The output from this class is the input for index reduction.
 
     The stages of diagram_processing (in order):
     - identify the AcausalDiagram nodes
-    - identify the fluid_i domain networks. A 'network' is subset of component ports that are all connected together sharing the
+    - identify the fluid domain networks. A 'network' is subset of component ports that are all connected together sharing the
         same fluid. e.g. a coolant loop, or a hydraulic system.
     - finalize the AcausalDiagram by calling finalize() method of all components. Presently this propagates fluid properties to all
         appropriate ports.
@@ -70,6 +80,7 @@ class DiagramProcessing:
         # ordered(indexed) symbols and equations sets
         self.syms = {}
         self.next_sym_idx = 0
+        self.syms_append(eqn_env.syms)
         self.eqs = {}
         # dict{sympy symbol: parent 'Sym' object} used to dereference to the parent.
         self.syms_map = {}
@@ -79,6 +90,7 @@ class DiagramProcessing:
 
         self.nodes = {}  # dict of node_id to set of ports
         self.node_domains = {}  # dict of node_id to node domain
+        self.port_to_node = {}  # dict(cmp:dict(port_id:node_id))
         self.pot_alias_map = {}  # dict{node_id:dict{der_idx:pot_sym}}
         self.alias_map = {}  # dict{aliasee:aliasee_sub_expr}
         self.alias_eqs = []  # list of the equation in which aliases were found.
@@ -87,7 +99,8 @@ class DiagramProcessing:
         self.params = {}  # dict from param symbol to param value
         self.inputs = []  # list of input Sym objects
         self.outp_exprs = {}  # dict{sym:expr} where expr syms are all in self.eqs
-        self.zcs = {}  # dict(idx:(zc_expr,zc_direction))
+        self.zcs = {}  # dict{idx:(zc_expr,zc_direction)}
+        self.fld_nws = {}  # dict{fluid_prop_cmp:set of all nodes associated with it}
         self.diagram_processing_done = False
         self.verbose = verbose
 
@@ -150,7 +163,9 @@ class DiagramProcessing:
         print(f"\tsym_ic={self.sym_ic}")
         print(f"\tparams={self.params}")
         print(f"\tinputs={self.inputs}")
-        print(f"\toutp_exprs={self.outp_exprs}")
+        print("\toutp_exprs:")
+        for outp_var, outp_expr in self.outp_exprs.items():
+            print(f"\t\t{outp_var}:{outp_expr}")
         print(f"\tzcs={self.zcs}")
         print(f"end {self.diagram.name}\n")
 
@@ -301,8 +316,8 @@ class DiagramProcessing:
 
         Naive algorithm to sort port-pairs into sets of ports belonging to a node in the network.
         Start by assuming each port-pair is its own node, i.e. a network with components connected in a line.
-        Intialize a dict 'nodes' by enumerating each of these into a dict{1:set1,2:set2, ...etc.}
-        Initial 'workset' as a list nodes.keys(), e.g. a list fo all the node IDs.
+        Initialize a dict 'nodes' by enumerating each of these into a dict{1:set1,2:set2, ...etc.}
+        Initialize 'workset' as a list nodes.keys(), e.g. a list fo all the node IDs.
         Then, pop an ID from workset, and pop the corresponding node(N) from 'nodes'.
             check if any other node shares a port with N,
                 if say node M shares a port with N, merge all ports of node N into node M, leaving M in 'nodes'.
@@ -331,83 +346,108 @@ class DiagramProcessing:
                 )
 
         # print(f"self.node_domains={self.node_domains}")
+        print(f"{nodes=}")
         self.nodes = nodes
-
-    def identify_fluid_networks(self):
-        """
-        Network of fluid components are special relative to others in that
-        they are incomplete unless they have fluid properties defined.
-        It is allowed to have 2 or more fluid networks interating, and each
-        network needs its fluid properties defined. To make this easy fo the
-        user, there is a FluidProperties component which the user 'connects'
-        to the fluid network just like any other block. There must be one and
-        only one luidProperties block per fluid network. Some fluid components
-        have equations which rely on fluid properties like density, etc. Therefore
-        each component connected to fluid network is passed the fluid_spec from
-        the FLuidProperties compoent connected to its network. In order to pass
-        the fluid_spec to each compoenent, we need to:
-            1] identify all segregated fluid networks
-            2] collect a list/set of the fluid components
-            3] ensure one and only one FluidProperties component is connected
-            4] copy the fluid_spec from the FluidProperties component to the
-            other components.
-        """
-        # dict{fld_prop_cmp:set(node_ids)}
-        # this only finds the node that the FluidProp component is directly connected to.
-        # FIXME: what this needs to do is:
-        # 1] find all node withdirect connection to a FP comp
-        # 2] for each comp at that node, and collect all ports that are not connected to
-        # this node, but are still part of thesame fluid network.
-        #   for a pump, pipe, or Y junction, this is all other ports of the component
-        #   for multi-fuid component with no mixing, this is only the ports for the same fluid.
-        #       e.g. if heat exchanger has FldA_inlet, FldA_outlet, FldB_inlet, FldB_outlet, if
-        #       this node is connected to FldA_outlet, then we only want to collect the node at
-        #       FldA_inlet. the nodes for Flb will be processed later.
-        fld_nws = {c: [] for c in self.diagram.comps if isinstance(c, FluidProperties)}
+        # create effectively the inverse mapping as well
         for node_id, port_set in self.nodes.items():
             for port_tuple in port_set:
                 cmp, port_id = port_tuple
-                if cmp in fld_nws.keys():
-                    fld_nws[cmp].append(node_id)
+                cmp_dict = self.port_to_node.get(cmp, {})
+                cmp_dict[port_id] = node_id
+                self.port_to_node[cmp] = cmp_dict
 
-        # print(f"{fld_nws=}")
+    def identify_fluid_networks(self):
+        """
+        Networks of fluid components are special relative to other domains in that
+        they are incomplete unless they have fluid properties defined.
+        It is allowed to have 2 or more fluid networks interacting (e.g. exchanging energy, but not mixing fluids),
+        and each network needs its fluid properties defined. To make this easy for the
+        user, there is a FluidProperties component which the user 'connects'
+        to the fluid network just like any other block. There must be one and
+        only one FluidProperties block per fluid network. Some fluid components
+        have equations which rely on fluid properties like density, etc. Therefore
+        each component connected to fluid network is passed the fluid_spec from
+        the FluidProperties component connected to its network. In order to pass
+        the fluid_spec to each compoenent, we need to:
+            1] identify all segregated fluid networks
+            2] collect a list/set of the fluid components in each network
+            3] ensure one and only one FluidProperties component is connected to a given network
+            4] X. copy the fluid_spec from the FluidProperties component to the
+            other components.
+            4] create fluid state equations for each node in a fluid network.
+            these are sort of like node_pot variables, but
 
-        # check that each node only appears in one fluid network.
-        # this simultaneously checks that one and only one FluidProp
-        # components is connected to a fluid network (i think).
-        # FIXME: this is untested.
-        node_chk = set()
-        erroneous_nodes = set()
-        erroneous_fp = set()
-        for fp, node_list in fld_nws.items():
-            node_set = set(node_list)
-            nodes_appearing_twice = node_chk & node_set
-            if nodes_appearing_twice:
-                erroneous_nodes = erroneous_nodes | node_set
-                erroneous_fp.update(fp)
+        In the case of multiple fluids interacting, this requires components that have ports
+        for fluid_A and fluid_B, and that these ports be correctly identified in the components'
+        fluid_port_sets attribute.
 
-        if erroneous_fp:
-            print(f"{erroneous_fp=}")
-            message = "Detected incorrectly connected fluid components."
-            raise AcausalModelError(
-                message=message,
-                ports=list(erroneous_fp),
-                dpd=self.dpd,
-            )
+        Eventually, multi-substance fluid models will be supported. But this doens't mean there aren't
+        use cases for segregated fluid networks: e.g. glycol cooling netrwork, and refrigerant cooling
+        network, interacting through a chiller, i.e. fluid-fluid heat exchanger.
+        """
+        dbg_print = self.verbose and False
+        fprop_clss = (FluidProperties, HydraulicProperties)
+        fp_cmps = [c for c in self.diagram.comps if isinstance(c, fprop_clss)]
+        if dbg_print:
+            print(f"DiagramProcessing.identify_fluid_networks()\n{fp_cmps=}")
+        fld_nodes = set()
+        for fp_cmp in fp_cmps:
+            if dbg_print:
+                print(f"\n{fp_cmp=}")
+            node_id = self.port_to_node[fp_cmp]["prop"]
+            node_set = set([node_id])
+            # we need to walk the graph to find all node, and their port_sets, for which
+            # this FluidProp has domain over.
+            while_lim = 10
+            while_cnt = 0
+            workset = set([node_id])
+            while workset:
+                if dbg_print:
+                    print(f"{workset=}")
+                if while_cnt >= while_lim:
+                    msg = "fluid properties propagation too many loops."
+                    raise AcausalCompilerError(message=msg, dpd=self.dpd)
+                node_id = workset.pop()
+                port_set = self.nodes[node_id]
+                for port_tuple in port_set:
+                    cmp, port_id = port_tuple
+                    if dbg_print:
+                        print(f"\t{cmp}.{port_id}")
+                    for cmp_port_set in cmp.fluid_port_sets:
+                        if dbg_print:
+                            print(f"\t\t{cmp_port_set=}")
+                        if port_id in cmp_port_set:
+                            if dbg_print:
+                                print(f"\t\t{port_id=}")
+                            for other_port_id in cmp_port_set:
+                                if dbg_print:
+                                    print(f"\t\t\t{other_port_id=}")
+                                new_node = self.port_to_node[cmp][other_port_id]
+                                if new_node not in node_set:
+                                    # FIXME: we should be adding already added node in theb first place.
+                                    workset.add(new_node)
+                                node_set.add(new_node)
+                while_cnt += 1
+            # check if any of the nodes for this fluid network have been assigned to
+            # another fluid network already, if so, raise error.
+            if fld_nodes & node_set:
+                message = "Detected fluid components with ports connected to multiple FluidProperties."
+                ports = []
+                for nid in node_set:
+                    ports = ports + list(self.nodes[nid])
+                raise AcausalModelError(
+                    message=message,
+                    ports=ports,
+                    dpd=self.dpd,
+                )
+            fld_nodes.update(node_set)
+            self.fld_nws[fp_cmp] = node_set
 
-        if erroneous_nodes:
-            # not quite clear how this should be formatted for the user.
-            print(f"{erroneous_nodes=}")
-            message = f"DiagramProcessing. identified {erroneous_nodes=}"
-            raise AcausalModelError(
-                message=message,
-            )
+        if dbg_print:
+            print(f"{self.fld_nws=}")
 
         # assign the fluid props to all the ports connected to each network.
-        for fp, node_ids in fld_nws.items():
-            # print(f"{fp.fluid.syms=}")
-            self.syms_append(fp.fluid.syms)
-            # print(f"{fp=} {node_ids=}")
+        for fp, node_ids in self.fld_nws.items():
             for node_id in node_ids:
                 port_set = self.nodes[node_id]
                 # print(f"{node_id=} {port_set=}")
@@ -418,14 +458,22 @@ class DiagramProcessing:
 
     def finalize_diagram(self):
         """
-        Calls the finalize() method for each component, and
-        populates symbol and equation data for diagram_processing.
+        1] Calls the finalize() method for each component.
+        2] Populates symbol and equation data for diagram_processing.
         """
         for cmp in self.diagram.comps:
-            cmp.finalize()
+            cmp.finalize(self.eqn_env)
             self.diagram.add_cmp_sympy_syms(cmp)
             self.diagram.syms.update(cmp.syms)
             self.diagram.eqs.update(cmp.eqs)
+
+        for fp in self.fld_nws:
+            # now that all components have been finalized, this means all fluid models
+            # have added their fluid state equations in all the necessary places. Some
+            # fluid models create new Sym objects when do that, so we need to add those
+            # newly created Sym objects to diagram processing list of 'syms'.
+            if fp.fluid.syms:
+                self.syms_append(fp.fluid.syms)
 
         syms = list(self.diagram.syms)
         self.syms_append(syms)
@@ -443,7 +491,8 @@ class DiagramProcessing:
         sum(all flow syms) = 0
         """
 
-        # print("AcausalCompiler.add_node_eqs()")
+        print("\n\nAcausalCompiler.add_node_flow_eqs()")
+        print(f"{self.nodes=}")
         for node_id, port_set in self.nodes.items():
             flow_syms_on_node = set()
 
@@ -463,6 +512,150 @@ class DiagramProcessing:
             sum_expr = sp.core.add.Add(*flow_syms_on_node)
             eq = Eqn(e=sp.Eq(0, sum_expr), kind=EqnKind.flow, node_id=node_id)
             self.eqs_append(eq)
+
+    def add_stream_balance_eqs(self):
+        print("\n\nAcausalCompiler.add_stream_balance_eqs()")
+        print(f"{self.nodes=}")
+        for fp, node_ids in self.fld_nws.items():
+            print(f"\n\n{fp=} {node_ids=}")
+            if isinstance(fp, FluidProperties):
+                for node_id in node_ids:
+                    port_set = self.nodes[node_id]
+
+                    # remove any FluidProperties components from port_sets.
+                    # FIXME: maybe this should be done when fluid props are assigned to comp ports?
+                    port_set_mflow = set()
+                    port_set_no_mflow = set()
+                    for port_tuple in port_set:
+                        cmp, port_id = port_tuple
+                        if not isinstance(cmp, FluidProperties):
+                            if cmp.ports[port_id].no_mflow:
+                                port_set_no_mflow.add(port_tuple)
+                            else:
+                                port_set_mflow.add(port_tuple)
+
+                    print(
+                        f"\t{node_id=}\n\t\t{port_set=}\n\t\t{port_set_mflow=}\n\t\t{port_set_no_mflow=}\n"
+                    )
+                    if len(port_set_mflow) <= 1:
+                        # each fluid connection must have >=2 ports that allow mass flow
+                        # this is sort of like special case D.3.1 of https://web.mit.edu/crlaugh/Public/stream-docs.pdf
+                        # I'm chosing not to implement support for this case right now.
+                        raise AcausalModelError(
+                            message="not enough ports have non-zero mass flow allowed.",
+                            ports=list(port_set),
+                            dpd=self.dpd,
+                        )
+                    elif len(port_set_mflow) == 2:
+                        print("\t\tspecial case for cmp1<=>cmp2 connection")
+                        # special case for cmp1<=>cmp2 connection
+                        # covered in D.3.2 of https://web.mit.edu/crlaugh/Public/stream-docs.pdf
+                        port_list = list(port_set_mflow)
+                        port_tuple_1 = port_list[0]
+                        port_tuple_2 = port_list[1]
+                        cmp_1, port_id_1 = port_tuple_1
+                        cmp_2, port_id_2 = port_tuple_2
+                        h_outflow_1 = cmp_1.ports[port_id_1].h_outflow.s
+                        h_inStream_1 = cmp_1.ports[port_id_1].h_inStream.s
+
+                        h_outflow_2 = cmp_2.ports[port_id_2].h_outflow.s
+                        h_inStream_2 = cmp_2.ports[port_id_2].h_inStream.s
+
+                        eq = Eqn(
+                            e=sp.Eq(h_inStream_1, h_outflow_2),
+                            kind=EqnKind.stream,
+                            node_id=node_id,
+                        )
+                        self.eqs_append(eq)
+                        eq = Eqn(
+                            e=sp.Eq(h_inStream_2, h_outflow_1),
+                            kind=EqnKind.stream,
+                            node_id=node_id,
+                        )
+                        self.eqs_append(eq)
+                        if port_set_no_mflow:
+                            print("\t\tspecial case for no mflow sensors")
+                            # there is one or more sensor ports connected here. this is
+                            # special case D.3.3 of https://web.mit.edu/crlaugh/Public/stream-docs.pdf
+                            # note, every sensor port connected here has the same inStream equation, so
+                            # we make just one equation, and a bunch of aliases.
+                            mflow_1 = cmp_1.ports[port_id_1].mflow.s
+                            mflow_2 = cmp_2.ports[port_id_2].mflow.s
+                            mflow_max_expr_1 = sp.Piecewise(
+                                (-mflow_1, -mflow_1 > M_FLOW_EPS), (M_FLOW_EPS, True)
+                            )
+                            mflow_max_expr_2 = sp.Piecewise(
+                                (-mflow_2, -mflow_2 > M_FLOW_EPS), (M_FLOW_EPS, True)
+                            )
+                            num_expr = (
+                                mflow_max_expr_1 * h_outflow_1
+                                + mflow_max_expr_2 * h_outflow_2
+                            )
+                            den_expr = mflow_max_expr_1 + mflow_max_expr_2
+
+                            # identified as SymKind.stream to minimize chance it is replaced by an alias
+                            sensor_inStream = Sym(
+                                self.eqn_env,
+                                name=f"np{node_id}_sensor_inStream",
+                                kind=SymKind.stream,
+                            )
+                            self.add_sym(sensor_inStream)
+                            eq = Eqn(
+                                e=sp.Eq(sensor_inStream.s, num_expr / den_expr),
+                                kind=EqnKind.stream,
+                                node_id=node_id,
+                            )
+                            self.eqs_append(eq)
+                            # ... and the aliases.
+                            for sensor_port_tuple in port_set_no_mflow:
+                                sensor, sensor_port_id = sensor_port_tuple
+                                print(f"\t\t\t{sensor=} {sensor_port_id=}")
+                                eq = Eqn(
+                                    e=sp.Eq(
+                                        sensor_inStream.s,
+                                        sensor.ports[sensor_port_id].h_inStream.s,
+                                    ),
+                                    kind=EqnKind.stream,
+                                    node_id=node_id,
+                                )
+                                self.eqs_append(eq)
+
+                    else:
+                        print("\t\tgeneral case cover in section D.2")
+                        # general case cover in section D.2
+                        for port_tuple_i in port_set_mflow:
+                            cmp_i, port_id_i = port_tuple_i
+                            print(f"\t\t{cmp_i=} {port_id_i=}")
+                            h_inStream_i = cmp_i.ports[port_id_i].h_inStream.s
+                            port_set_j = port_set_mflow.difference({port_tuple_i})
+                            num_terms = []
+                            den_terms = []
+                            for port_tuple_j in port_set_j:
+                                cmp_j, port_id_j = port_tuple_j
+                                print(f"\t\t\t{cmp_j=} {port_id_j=}")
+                                # mflow_syms.append(cmp_j.ports[port_id_j].mflow)
+                                # h_outflow_syms.append(cmp_j.ports[port_id_j].h_outflow)
+                                mflow_j = cmp_j.ports[port_id_j].mflow.s
+                                h_outflow_j = cmp_j.ports[port_id_j].h_outflow.s
+
+                                mflow_max_expr_j = sp.Piecewise(
+                                    (-mflow_j, -mflow_j > M_FLOW_EPS),
+                                    (M_FLOW_EPS, True),
+                                )
+
+                                num_term = mflow_max_expr_j * h_outflow_j
+                                num_terms.append(num_term)
+                                den_terms.append(mflow_max_expr_j)
+
+                            num_expr = sp.core.add.Add(*num_terms)
+                            den_expr = sp.core.add.Add(*den_terms)
+                            print(f"\t\t{num_expr=}\n{den_expr=}")
+                            eq = Eqn(
+                                e=sp.Eq(h_inStream_i, num_expr / den_expr),
+                                kind=EqnKind.stream,
+                                node_id=node_id,
+                            )
+                            self.eqs_append(eq)
 
     def add_node_potential_eqs(self):
         """
@@ -507,12 +700,18 @@ class DiagramProcessing:
         compiler alias_map, we can always know the value of any component potential variable.
 
         """
-
+        print("\n\nAcausalCompiler.add_node_potential_eqs()")
+        print(f"{self.nodes=}")
         for node_id, port_set in self.nodes.items():
+            node_domain = self.node_domains[node_id]
+            np_qty_name = nodpot_qty(node_domain)
+            np_base_name = f"np{node_id}_{str(node_domain)}_" + np_qty_name
             # start defining potential symbols family for the node
             node_alias_map = {}
+            print(f"\t{np_base_name=} {port_set=}")
             for port_tuple in port_set:
                 cmp, port_id = port_tuple
+                print(f"\t\t{cmp=} {port_id=}")
                 # HACK: this is a bit hacky. FluidProperties components have no
                 # flow nor potential symbols, so we allow skipping them here.
                 if isinstance(cmp, FluidProperties):
@@ -527,7 +726,7 @@ class DiagramProcessing:
                     if der_idx not in node_alias_map.keys():
                         node_pot = Sym(
                             self.eqn_env,
-                            name=f"np{node_id}_n{abs(der_idx)}",
+                            name=np_base_name + f"_n{abs(der_idx)}",
                             kind=SymKind.node_pot,
                         )
                         self.add_sym(node_pot)
@@ -548,7 +747,9 @@ class DiagramProcessing:
                 # this is temporary. eventually we can sort them.
                 if 0 not in node_alias_map.keys():
                     node_pot = Sym(
-                        self.eqn_env, name=f"np{node_id}_0", kind=SymKind.node_pot
+                        self.eqn_env,
+                        name=np_base_name + "_0",
+                        kind=SymKind.node_pot,
                     )
                     self.add_sym(node_pot)
                     node_alias_map[0] = node_pot
@@ -570,7 +771,7 @@ class DiagramProcessing:
                     if der_idx not in node_alias_map.keys():
                         node_pot = Sym(
                             self.eqn_env,
-                            name=f"np{node_id}_p{abs(der_idx)}",
+                            name=np_base_name + f"_p{abs(der_idx)}",
                             kind=SymKind.node_pot,
                         )
                         self.add_sym(node_pot)
@@ -590,6 +791,7 @@ class DiagramProcessing:
             self.pot_alias_map[node_id] = node_alias_map
 
             # update the int_sym and der_sym of the newly created pot vars
+            print(f"{node_alias_map=}")
             pot_min = min(node_alias_map.keys())
             pot_max = max(node_alias_map.keys())
             # go from underlying variable to highest derivative, adding the der_sym
@@ -684,6 +886,10 @@ class DiagramProcessing:
                     return sym1
                 elif s1s.kind == SymKind.node_pot:
                     return sym0
+                # elif s0s.kind == SymKind.stream:
+                #     return sym1
+                # elif s1s.kind == SymKind.stream:
+                #     return sym0
                 else:
                     return sym0  # arbitrary
             else:
@@ -868,94 +1074,90 @@ class DiagramProcessing:
 
         self._update_dpd()
 
-        def _validate_ics(self):
-            # FIXME: this while loop limit is just a back stop in case the algorithm below
-            # may sometimes not converge. There might be cases where an IC is set to 1.0,
-            # then changed to 2.0, and then set back to 1.0, over and over. Im not sure,
-            # but i dont want to find out by having the app running an infinite loop.
-            while_cnt_limit = 10000  # we should never get near this limit normally
-            while_cnt = 0
-            workset = set(self.aliaser_map.keys())
-            while workset:
-                aliaser = workset.pop()
-                aliasee_pairs = self.aliaser_map[aliaser]
-                # print(f"\n{aliaser=}++++++++++++++++++++++++++++++ {while_cnt=}")
-                aliaser_ic_pre = aliaser.ic
-                aliasees_ics = []
-                aliasees_weak_ics = []
-                for alias, alias_expr in aliasee_pairs:
-                    # print(f"{alias=}. {alias.ic=}. {alias.ic_fixed=} {alias_expr=}")
-                    alias_ic = alias.ic
-                    if alias_ic is not None:
-                        alias_to_aliaser_ic = float(alias_expr.subs(alias.s, alias_ic))
-                        if alias.ic_fixed:
-                            aliasees_ics.append(alias_to_aliaser_ic)
-                        else:
-                            aliasees_weak_ics.append(alias_to_aliaser_ic)
+        def ic_mismatch(ic1, ic2):
+            return not np.allclose(ic1, ic2)
 
-                # print(f"{aliasees_ics=}")
-                # print(f"{aliasees_weak_ics=}")
-                if aliaser.ic is not None and not aliaser.ic_fixed and aliasees_ics:
-                    # this aliaser has a weak IC, but some aliasees have strong ICs, so reset
-                    # this aliaser IC to None.
-                    aliaser.ic = None
-                for ic in aliasees_ics:
+        # FIXME: this while loop limit is just a back stop in case the algorithm below
+        # may sometimes not converge. There might be cases where an IC is set to 1.0,
+        # then changed to 2.0, and then set back to 1.0, over and over. Im not sure,
+        # but i dont want to find out by having the app running an infinite loop.
+        while_cnt_limit = 10000  # we should never get near this limit normally
+        while_cnt = 0
+        workset = set(self.aliaser_map.keys())
+        while workset:
+            aliaser = workset.pop()
+            aliasee_pairs = self.aliaser_map[aliaser]
+            # print(f"\n{aliaser=}++++++++++++++++++++++++++++++ {while_cnt=}")
+            aliaser_ic_pre = aliaser.ic
+            aliasees_ics = []
+            aliasees_weak_ics = []
+            for alias, alias_expr in aliasee_pairs:
+                # print(f"{alias=}. {alias.ic=}. {alias.ic_fixed=} {alias_expr=}")
+                alias_ic = alias.ic
+                if alias_ic is not None:
+                    alias_to_aliaser_ic = float(alias_expr.subs(alias.s, alias_ic))
+                    if alias.ic_fixed:
+                        aliasees_ics.append(alias_to_aliaser_ic)
+                    else:
+                        aliasees_weak_ics.append(alias_to_aliaser_ic)
+
+            # print(f"{aliasees_ics=}")
+            # print(f"{aliasees_weak_ics=}")
+            if aliaser.ic is not None and not aliaser.ic_fixed and aliasees_ics:
+                # this aliaser has a weak IC, but some aliasees have strong ICs, so reset
+                # this aliaser IC to None.
+                aliaser.ic = None
+            for ic in aliasees_ics:
+                aliaser_ic = aliaser.ic
+                if aliaser_ic is None and ic is not None:
+                    aliaser.ic = ic
+                    aliaser.ic_fixed = True
+                    if self.verbose:
+                        print(f"for {aliaser} assign ic={ic}")
+                elif ic is not None and ic_mismatch(ic, aliaser_ic):
+                    message = (
+                        f"Detected conflicting initial conditions."
+                        f" Values are: {ic} and {aliaser_ic}."
+                    )
+                    raise AcausalModelError(
+                        message=message, variables=[aliaser], dpd=self.dpd
+                    )
+            if aliaser.ic is None and aliasees_weak_ics:
+                for ic in aliasees_weak_ics:
                     aliaser_ic = aliaser.ic
                     if aliaser_ic is None and ic is not None:
                         aliaser.ic = ic
-                        aliaser.ic_fixed = True
                         if self.verbose:
-                            print(f"for {aliaser} assign ic={ic}")
-                    elif ic is not None and ic != aliaser_ic:
-                        message = (
-                            f"Detected conflicting initial conditions."
-                            f" Values are: {ic} and {aliaser_ic}."
-                        )
-                        raise AcausalModelError(
-                            message=message, variables=[aliaser], dpd=self.dpd
-                        )
-                if aliaser.ic is None and aliasees_weak_ics:
-                    for ic in aliasees_weak_ics:
-                        aliaser_ic = aliaser.ic
-                        if aliaser_ic is None and ic is not None:
-                            aliaser.ic = ic
-                            if self.verbose:
-                                print(f"for {aliaser} assign weak ic={ic}")
-                        elif ic is not None and ic != aliaser_ic:
-                            message = (
-                                f"Detected conflicting non-fixed initial conditions."
-                                f" Values are: {ic} and {aliaser_ic}."
-                            )
-                            raise AcausalModelError(
-                                message=message, variables=[aliaser], dpd=self.dpd
-                            )
+                            print(f"for {aliaser} assign weak ic={ic}")
+                    elif ic is not None and ic_mismatch(ic, aliaser_ic):
+                        msg = f"Conflicting weak ICs for {aliaser}={aliaser_ic} and aliasee ic={ic}, ignoring the latter."
+                        warnings.warn(msg, UserWarning)
 
-                aliaser_ic = aliaser.ic
-                if aliaser_ic_pre != aliaser_ic:
-                    # only re-add any other_aliasers which are aliasers of this aliaser.
-                    # good luck making sense of that senstence!
-                    other_aliasers = []
-                    for other_aliaser, aliasee_pairs in self.aliaser_map.items():
-                        aliasees = [a for (a, e) in aliasee_pairs]
-                        if aliaser in aliasees:
-                            other_aliasers.append(other_aliaser)
+            aliaser_ic = aliaser.ic
+            if aliaser_ic_pre != aliaser_ic:
+                # only re-add any other_aliasers which are aliasers of this aliaser.
+                # good luck making sense of that senstence!
+                other_aliasers = []
+                for other_aliaser, aliasee_pairs in self.aliaser_map.items():
+                    aliasees = [a for (a, e) in aliasee_pairs]
+                    if aliaser in aliasees:
+                        other_aliasers.append(other_aliaser)
 
-                    workset.update(set(other_aliasers))
+                workset.update(set(other_aliasers))
 
-                while_cnt += 1
-                if while_cnt >= while_cnt_limit:
-                    raise AcausalCompilerError(
-                        message="DiagramProcessing:initial_condition_validation execeeded while loop limit.",
-                        dpd=self.dpd,
-                    )
-
-        _validate_ics(self)
+            while_cnt += 1
+            if while_cnt >= while_cnt_limit:
+                raise AcausalCompilerError(
+                    message="DiagramProcessing:initial_condition_validation execeeded while loop limit.",
+                    dpd=self.dpd,
+                )
 
     def prune_derivative_relations(self):
         """
         iterate over equations and remove any derivative relations that do not define the system.
         """
-        # print("======================== prune_derivative_relations")
+        if self.verbose:
+            print("======================== prune_derivative_relations")
         # get the syms in the system equations. do not get symbols from derivative relation equations.
         eqs_syms = self.get_some_syms(eqn_kind_filter=["der_relation"])
         eqs_syms = list(eqs_syms.values())
@@ -984,10 +1186,12 @@ class DiagramProcessing:
         # NOT needed to define a time derivative relationship between two sp.Function symbols
         # appearing in the 'system equations'.
         remove_eq_ids = []
-        lshs = set()
+        lhss = set()
+        rhss = set()
         for eq_idx, eq in self.eqs.items():
             if eq.kind == EqnKind.der_relation:
-                # print(f"\n\t {eq_idx}: {eq}")
+                if self.verbose:
+                    print(f"\n\t {eq_idx}: {eq}")
                 if eq.e.lhs == 0:
                     # the intent is to match equations of form Eq(0, Derivative(0, t))
                     # FIXME: the condition above is potentially inadequately robust.
@@ -1001,13 +1205,14 @@ class DiagramProcessing:
 
                 lhs_fcns = eq.e.lhs.atoms(sp.Function)
                 rhs_fcns = eq.e.rhs.atoms(sp.Function)
-                # print(f"\t lhs_fcns={lhs_fcns} rhs_fcns={rhs_fcns}")
-
-                # print(f"\t lshs={lshs}")
-                if lhs_fcns.issubset(lshs):
+                if self.verbose:
+                    print(f"\t\t {lhs_fcns=} {rhs_fcns=}")
+                    print(f"\t\t {lhss=} {rhss=}")
+                if lhs_fcns.issubset(lhss) and rhs_fcns.issubset(rhss):
                     # the intent is to remove derivative_relations which have been made
-                    # identical to
-                    # print("\t remove because its a duplicate")
+                    # identical to each other through alias eliminaton. it is important to check both sides
+                    # since alias elimination may have put the same var in the LSH of 2 der_relations, but
+                    # both are still required.
                     remove_eq_ids.append(eq_idx)
                     continue
 
@@ -1017,16 +1222,18 @@ class DiagramProcessing:
                 # print(f"\t intersection={intersection}")
                 if not intersection:
                     # the intent is to remove der_relations for which neither of their symbols
-                    # appear in the fimal 'system equations'.
+                    # appear in the final 'system equations'.
                     # print("\t remove because no matching symbols")
                     remove_eq_ids.append(eq_idx)
                     continue
 
                 # if we cant remove this derivative relation, keep track of its lhs,
                 # that way, if we find a duplicate der_relation, we can remove the duplicate.
-                lshs.update(lhs_fcns)
+                lhss.update(lhs_fcns)
+                rhss.update(rhs_fcns)
 
-        # print(f"remove_eq_ids={remove_eq_ids}")
+        if self.verbose:
+            print(f"remove_eq_ids={remove_eq_ids}")
 
         for idx in remove_eq_ids:
             del self.eqs[idx]
@@ -1035,11 +1242,20 @@ class DiagramProcessing:
         """
         It can happen that a after alias elimination, some equations
         are modified so as to produce two equations that are the same.
-        This function removes equations that are mathematical equivalent
+        This function removes equations that are mathematically equivalent
         to another equation.
 
         the solution below is modeled from this;
         https://stackoverflow.com/questions/76832790/testing-equality-of-eq-not-expr-in-sympy
+
+        FIXME
+        i had this idea that might be less gross than what we have now. it a slight derivative of what we have,
+        but could reduce the superfluous computation we're doing now.
+            1] we have some set of equations: eqs, with N eq elements
+            2] create the incidence matrix for eqs
+            3] create subsets of eq's that have matching variable sets in the incidence matrix
+            4] for each subset found, do the sp.monic(expr) == sp.monic(unique_expr) things we do now to see if any eq
+                in the subset that are mathematically the same
         """
 
         if self.verbose:
@@ -1057,7 +1273,8 @@ class DiagramProcessing:
             is_duplicate = False
             for unique_idx, unique_expr in unique_exprs.items():
                 if self.verbose:
-                    print(f"\t{unique_idx=} {sp.simplify(unique_expr)=}")
+                    # print(f"\t{unique_idx=} {sp.simplify(unique_expr)=}")
+                    print(f"\t{unique_idx=} {unique_expr=}")
                 if sp.monic(expr) == sp.monic(unique_expr):
                     duplicates.append(idx)
                     is_duplicate = True
@@ -1065,7 +1282,10 @@ class DiagramProcessing:
             if not is_duplicate:
                 unique_exprs[idx] = expr
 
-        self.eqs = {i: e for i, e in self.eqs.items() if i not in duplicates}
+        if duplicates:
+            for duplicate in duplicates:
+                self.eqs.pop(duplicate, None)
+
         if self.verbose:
             print(f"\n{duplicates=}\n")
             self.pp_eqs()
@@ -1153,30 +1373,66 @@ class DiagramProcessing:
         # collect x and x_dot
         x_set = set()
         x_dot_set = set()
+
+        # for collecting the weak ICs. These are declared here because
+        # they are added to in several places.
+        DEFAULT_IC = 0.0
+        ics_weak2 = {}
         x_to_x_dot_ic = {}
+
         for eq_idx, eq in self.eqs.items():
             if eq.kind == EqnKind.der_relation:
                 if self.verbose:
-                    print(f"{eq_idx=} {eq=}")
+                    print(f"\n{eq_idx=} {eq=}")
                 fcn_set = eq.e.rhs.atoms(sp.Function)
                 if not fcn_set:
                     raise AcausalCompilerError(
                         message="[index_reduction_inputs_f] equation RHS has no functions.",
                         dpd=self.dpd,
                     )
+                # self.x_dot.append(sp.simplify(eq.e.rhs))
+                # the line above was the original idea, but this occassionally results
+                # one of: -Der(f(t),t) or Der(-f(t),t), and those '-' seem to
+                # break index reduction because they make the Der() symbol more
+                # like an expression, which is not what is needed.
+                # so we landed on the operation below which seems to work for now.
                 x_el = eq.e.rhs.atoms(sp.Function).pop()
+                if self.verbose:
+                    print(f"\t{x_el=}")
                 x_set.add(x_el)
+
+                # some machinery for assisting with initial condition for symbols of the form: Der(f(t))
+                # !!!!! the old way.
                 x_dot_el = x_el.diff(self.eqn_env.t)
                 x_dot_set.add(x_dot_el)
                 lhs_sym = eq.e.lhs.atoms(sp.Function).pop()
                 x_to_x_dot_ic[lhs_sym] = x_dot_el
-                # the line below was the original idea, but this occassionally results
-                # one of: -Der(f(t),t) or Der(-f(t),t), and those '-' seem to
-                # break index reduction because they make the Der() symbol more
-                # like an expression, which is not what is needed.
-                # self.x_dot.append(sp.simplify(eq.e.rhs))
+
+                # !!!!! the supposed 'right' way
+                # all Der(f(t)) need to be weak because of where these symbols
+                # appear in the system equations, e.g. g(t) = Der(f(t)), they will always
+                # appear in those equations. because we get the IC from the IC of g(t),
+                # it is not apropriate to have both g(t) IC and Der(f(t)) IC both be strong
+                # since they are equated to each other. One needs to be left weak. Since g(t)
+                # is typically where users apply ICs, we choose g(t) to be allowed to be
+                # strong or weak, and force Der(f(t)) to always be weak.
+                # Note, due to alias elimination, the der_relation might be like: -g(t),Der(f(t)),
+                # this means we cannot blindly apply the IC for g(t) to Der(f(t)), but rather we
+                # have to substitute the IC for g(t) into the LHS, evaluate to a float. This is
+                # the same procedure applied in initial_condition_validation() above.
+                lhs_fcn = eq.e.lhs.atoms(sp.Function).pop()
+                # if lhs_sym not in x_to_x_dot_ic.keys():
+                #     x_to_x_dot_ic[lhs_sym] = []
+                # x_to_x_dot_ic[lhs_sym] = x_dot_el
+                lhs_sym = self.syms_map.get(lhs_fcn, None)
+                lhs_sym_ic = lhs_sym.ic if lhs_sym.ic is not None else DEFAULT_IC
+                x_dot_el_ic = float(eq.e.lhs.subs(lhs_sym.s, lhs_sym_ic))
+                ics_weak2[x_dot_el] = x_dot_el_ic
+                print(f"add weak IC for {x_dot_el=}")
 
         if self.verbose:
+            print(f"{ics_weak2=}")
+            print(f"{x_dot_set=}")
             print(f"{x_to_x_dot_ic=}")
 
         knowns_syms = (
@@ -1251,30 +1507,34 @@ class DiagramProcessing:
             vars_in_exprs[expr] = X & syms_set  # set intersection
 
         X = list(X)
-
+        print(f"{X=}")
         # collect the strong and weak ICs
         ics = {}
         ics_weak = {}
+        if self.verbose:
+            print("collect strong and weak ICs:")
         for s in X:
             sym = self.syms_map.get(s, None)
-            # print(f"\n find ICs for {sym=}")
+            if self.verbose:
+                print(f"\nfind ICs for {sym=} {s=}")
             if sym is not None:
-                # print(f"{sym.ic=} {sym.ic_fixed=}")
+                if self.verbose:
+                    print(f"\t{sym.ic=} {sym.ic_fixed=}")
                 if sym.ic is not None:
                     if sym.ic_fixed:
                         ics[s] = sym.ic
                     else:
                         ics_weak[s] = sym.ic
                 else:
-                    ics_weak[s] = 0.0  # this just applies the default.
-                    sym.ic = 0.0
-            else:
-                # case where variable did not come from a component or
-                # from node equation addition
-                if s not in x_to_x_dot_ic.values():
-                    raise AcausalCompilerError(
-                        message=f"Unexpected variable {s} in X.", dpd=self.dpd
-                    )
+                    ics_weak[s] = DEFAULT_IC  # this just applies the default.
+                    sym.ic = DEFAULT_IC
+            # else:
+            #     # case where variable did not come from a component or
+            #     # from node equation addition
+            #     if s not in x_to_x_dot_ic.values():
+            #         raise AcausalCompilerError(
+            #             message=f"Unexpected variable {s} in X.", dpd=self.dpd
+            #         )
             # duplicate the IC assignment for the 'Derivative(f(t)) symbols.
             if s in x_to_x_dot_ic.keys():
                 x_dot_s = x_to_x_dot_ic[s]
@@ -1286,21 +1546,37 @@ class DiagramProcessing:
                 # since they are equated to each other. One needs to be left weak. Since g(t)
                 # is typically where users apply ICs, we choose g(t) to be allowed to be
                 # strong or weak, and force Der(f(t)) to always be weak.
+                if self.verbose:
+                    print(f"\tadd weak IC for {x_dot_s=}")
                 ics_weak[x_dot_s] = sym.ic
+
+        # HACK: the above 'old way' of collecting ICs weak seems to be robust for our presenting
+        # testing. however, it misses a peculiar case where multiple der_relations have the same
+        # symbol in the LHS. ics_weak2, the 'right way', does capture these missing IC entries,
+        # but using that instead of ics_weak causes all sorts of other testing issues.
+        # So the HACK is to 'update' ics_weak with ics_weak2, thus adding anything missing in
+        # ics_weak, and changing and potentially incorrect IC values in ics_weak for those symbols
+        # in ics_weak2.
+        ics_weak.update(ics_weak2)
 
         if self.verbose:
             print(f"{x_dot=}")
             print(f"{x=}")
             print(f"{y=}")
             print(f"{X=}")
-            print("exprs:\n")
+            print("\nexprs:")
             for i, expr in enumerate(exprs):
                 print(f"\t{i}: {expr}")
 
-            print(f"{vars_in_exprs=}")
+            print("\nvars_in_exprs:")
+            for expr, vars in vars_in_exprs.items():
+                print(f"\t{expr=}")
+                for var in vars:
+                    print(f"\t\t{var=}")
             print(f"{knowns=}")
             print(f"{ics=}")
             print(f"{ics_weak=}")
+            print(f"{ics_weak2=}")
             print(f"num exprs: {len(exprs)=} num variables: {len(x)+len(y)=} ")
 
         total_ics = len(ics) + len(ics_weak)
@@ -1343,10 +1619,15 @@ class DiagramProcessing:
         self.identify_nodes()
         self.identify_fluid_networks()
         self.finalize_diagram()
+        if self.verbose:
+            self.pp()
         self.add_node_flow_eqs()
+        self.add_stream_balance_eqs()
         self.add_node_potential_eqs()
         self.add_derivative_relations()
         self.finalize_equations()  # just book keeping
+        if self.verbose:
+            self.pp()
         self.collect_zcs()  # do this *before* alias elimination
         self.alias_elimination()
         self.initial_condition_validation()
@@ -1357,7 +1638,6 @@ class DiagramProcessing:
         if self.verbose:
             self.pp()
         self.index_reduction_inputs_f()
-
         if self.verbose:
             self.pp()
         self.prep_dpd()

@@ -54,8 +54,6 @@ class ContextFactory(metaclass=abc.ABCMeta):
     def __call__(
         self,
         time: Scalar = 0.0,
-        check_types: bool = True,
-        error_collector: ErrorCollector = None,
     ) -> ContextBase:
         """Create a context object for the system.
 
@@ -80,13 +78,6 @@ class ContextFactory(metaclass=abc.ABCMeta):
         # determined based on what it's connected to (see `DerivativeDiscrete` block
         # for an example).
         ctx = self.initialize_static_data(ctx)
-
-        # Optionally, perform basic type checking by evaluating all the cache sources.
-        # Systems are allowed to define any implementation-specific type checking.
-        # Since this won't make sense on partially-constructed digrams, it should only
-        # be done for the root context.
-        if check_types:
-            self.check_types(ctx, error_collector=error_collector)
 
         ctx = ctx.mark_initialized()
         return ctx
@@ -169,12 +160,13 @@ class LeafContextFactory(ContextFactory):
 
         try:
             system.initialize(**system.parameters)
+        except StaticError:
+            raise
         except BaseException as exc:
             raise StaticError(system=system) from exc
 
         # Make sure the child system has a dependency graph so that we can
-        # subscribe trackers to its ports and callbacks.  If the system already
-        # has a dependency graph, this will do nothing.
+        # subscribe trackers to its ports and callbacks.
         system.create_dependency_graph()
 
         dynamic_parameters = {}
@@ -208,10 +200,10 @@ class DiagramContextFactory(ContextFactory):
             sys.context_factory.create_node_context() for sys in system.nodes
         ]
 
-        system.check_no_algebraic_loops()
-
         # Create the dependency graph for the diagram
         system.create_dependency_graph()
+
+        system.check_no_algebraic_loops()
 
         subcontexts = OrderedDict()
         for ctx in subcontext_nodes:
@@ -267,3 +259,33 @@ class DiagramContextFactory(ContextFactory):
             root_context,
             error_collector=error_collector,
         )
+
+    def __call__(
+        self,
+        time: Scalar = 0.0,
+        check_types: bool = True,
+        error_collector: ErrorCollector = None,
+    ) -> ContextBase:
+        # ctx = super().__call__(time)
+        ctx = self.create_node_context()
+        ctx = ctx.with_time(time)
+
+        # At this point the call should be "untraced", meaning we can change
+        # attributes of the owning system based on the context.  This is useful
+        # when the system has an internal state with dtype or shape that must be
+        # determined based on what it's connected to (see `DerivativeDiscrete` block
+        # for an example).
+        ctx = self.initialize_static_data(ctx)
+
+        # Optionally, perform basic type checking by evaluating all the cache sources.
+        # Systems are allowed to define any implementation-specific type checking.
+        # Since this won't make sense on partially-constructed digrams, it should only
+        # be done for the root context.
+        # NOTE: Must check types only after the full graph has finished initializing in
+        # order to be able to call the callbacks of ports.
+        if check_types:
+            self.check_types(ctx, error_collector=error_collector)
+
+        ctx = ctx.mark_initialized()
+
+        return ctx

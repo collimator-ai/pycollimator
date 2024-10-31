@@ -15,9 +15,10 @@ import concurrent.futures
 import os
 import logging
 import mimetypes
+import sys
+import tempfile
 import time
-from typing import Any, Callable, IO, AnyStr
-
+from typing import Any, Callable
 
 from collimator.dashboard.serialization import (
     model_json,
@@ -31,6 +32,7 @@ from collimator.dashboard.schemas import (
     ModelSummary,
     ProjectSummary,
 )
+from collimator.dashboard import utils
 from collimator.framework import Diagram, Parameter
 from collimator.library import ReferenceSubdiagram
 from collimator.simulation.types import SimulationResults
@@ -317,6 +319,149 @@ class Project:
         self._submodels[submodel.name] = ref_id
         return ref_id
 
+    def upload_file(self, name: str, file: str, overwrite=True):
+        """
+        Uploads a file to a project.
+
+        Args:
+            name (str): The name of the file.
+            file (str): The path to the file to be uploaded.
+            overwrite (bool, optional): Flag indicating whether to overwrite an existing file with the same name.
+                Defaults to True.
+
+        Returns:
+            dict: A dictionary containing the summary of the uploaded file.
+
+        Raises:
+            api.CollimatorApiError: If the file upload fails.
+        """
+
+        project_uuid = self.summary.uuid
+
+        mime_type, _ = mimetypes.guess_type(name)
+        mime_type = mime_type or "application/octet-stream"
+
+        with open(file, "rb") as fp:
+            size = os.fstat(fp.fileno()).st_size
+
+            logger.info(
+                "Uploading file %s (type: %s, size: %d) to project %s...",
+                name,
+                mime_type,
+                size,
+                project_uuid,
+            )
+            body = {
+                "name": name,
+                "content_type": mime_type,
+                "overwrite": overwrite,
+                "size": size,
+            }
+
+            try:
+                put_url_response = api.post(
+                    f"/projects/{project_uuid}/files", body=body
+                )
+            except api.CollimatorApiError as e:
+                logger.error("Failed to upload file %s: %s", name, e)
+                raise
+
+            s3_presigned_url = put_url_response["put_presigned_url"]
+            s3_response = requests.put(
+                s3_presigned_url,
+                headers={"Content-Type": mime_type, "Content-Length": str(size)},
+                data=fp if size > 0 else b"",
+                verify=False,
+            )
+
+        if s3_response.status_code != 200:
+            logger.error("s3 upload failed: %s", s3_response.text)
+            raise api.CollimatorApiError(
+                f"Failed to upload file {name} to project {project_uuid}"
+            )
+        file_uuid = put_url_response["summary"]["uuid"]
+        process_response = api.call(
+            f"/projects/{project_uuid}/files/{file_uuid}/process", "POST"
+        )
+        logger.info("Finished uploading file %s", name)
+
+        return process_response["summary"]
+
+    def upload_files(self, files: list[str], overwrite=True):
+        """
+        Uploads multiple files to a project.
+
+        Args:
+            files (list[str]): A list of file paths to be uploaded.
+            overwrite (bool, optional): Flag indicating whether to overwrite existing files.
+                Defaults to True.
+        """
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = []
+            for file in files:
+                name = os.path.basename(file)
+                futures.append(executor.submit(self.upload_file, name, file, overwrite))
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
+
+    def upload_directory(
+        self, directory: str, overwrite=False, sync=False, target_dir=""
+    ):
+        """
+        Uploads a directory of files to a project, keeping the directory structure.
+
+        This function will ignore files specified in the .gitignore or .collimatorignore file in the directory.
+
+        Args:
+            directory (str): The path to the directory containing the files to be uploaded.
+            overwrite (bool, optional): Flag indicating whether to overwrite existing files. Defaults to False.
+            sync (bool, optional): Flag indicating whether to synchronize the directory with the project. Defaults to False.
+                This will delete files in the project that are not present in the directory.
+            target_dir (str, optional): The target directory in the project. Defaults to "".
+        """
+        if not os.path.isdir(directory):
+            raise ValueError(f"Directory '{directory}' does not exist")
+
+        ignored_files = utils.get_ignored_files(directory)
+
+        if sync:
+            root = os.path.dirname(directory)
+            for file in self.summary.files:
+                if file.name.startswith(target_dir):
+                    file_path = os.path.join(root, file.name[len(target_dir) :])
+                else:
+                    file_path = os.path.join(root, file.name)
+                rel_path = os.path.relpath(file_path, directory)
+                if not os.path.exists(file_path) or rel_path in ignored_files:
+                    logger.info("Deleting file %s from project", file.name)
+                    api.call(
+                        f"/projects/{self.summary.uuid}/files/{file.uuid}", "DELETE"
+                    )
+
+        dirname = os.path.basename(directory)
+        futures = []
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for root, dirnames, files in os.walk(directory):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    if ignored_files:
+                        rel_path = os.path.relpath(file_path, directory)
+                        if rel_path in ignored_files:
+                            continue
+                    name = os.path.relpath(file_path, directory)
+                    name = os.path.join(target_dir, dirname, name)
+                    futures.append(
+                        executor.submit(
+                            self.upload_file,
+                            name,
+                            file_path,
+                            overwrite=overwrite or sync,
+                        )
+                    )
+
+            for future in concurrent.futures.as_completed(futures):
+                future.result()
+
     @property
     def uuid(self) -> str:
         return self._summary.uuid
@@ -424,7 +569,12 @@ def _parse_project_summary(project_summary: dict) -> ProjectSummary:
     )
 
 
-def _download_file(file: FileSummary, project_uuid: str, destination: str):
+def _download_file(
+    file: FileSummary, project_uuid: str, destination: str, overwrite: bool = False
+):
+    if os.path.exists(destination) and not overwrite:
+        logger.info("File %s already exists, skipping download", destination)
+        return
     response = api.get(f"/projects/{project_uuid}/files/{file.uuid}/download")
     logger.debug("Downloading %s to %s", response["download_link"], destination)
     resp = requests.get(response["download_link"])
@@ -433,16 +583,22 @@ def _download_file(file: FileSummary, project_uuid: str, destination: str):
             "Failed to download data file %s from project %s", file.name, project_uuid
         )
         return
+
+    dirname = os.path.dirname(destination)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+
     with open(destination, "wb") as f:
         f.write(resp.content)
 
 
-def get_project_by_name(project_name: str) -> Project:
+def get_project_by_name(project_name: str, **kwargs) -> Project:
     """
     Retrieves a project by its name.
 
     Args:
         project_name (str): The name of the project to retrieve.
+        **kwargs: Additional keyword arguments. See get_project_by_uuid() for details.
 
     Returns:
         Project: The project object.
@@ -480,15 +636,23 @@ def get_project_by_name(project_name: str) -> Project:
         )
 
     project_uuid = results[0]["uuid"]
-    return get_project_by_uuid(project_uuid)
+    return get_project_by_uuid(project_uuid, **kwargs)
 
 
-def get_project_by_uuid(project_uuid: str) -> Project:
+def get_project_by_uuid(
+    project_uuid: str,
+    overwrite: bool = False,
+    download_files: bool = True,
+    project_dir: str = None,
+) -> Project:
     """
     Retrieves a project with the given UUID and downloads its files.
 
     Args:
         project_uuid (str): The UUID of the project to retrieve.
+        overwrite (bool, optional): Flag indicating whether to overwrite local files. Defaults to False.
+        download_files (bool, optional): Flag indicating whether to download project files. Defaults to True.
+        project_dir (str, optional): The directory to download the project files to. Will use a temporary directory if not specified. Defaults to None.
 
     Returns:
         Project: The downloaded project, including its models and files.
@@ -499,23 +663,32 @@ def get_project_by_uuid(project_uuid: str) -> Project:
     project_response = api.get(f"/projects/{project_uuid}")
     project_summary = _parse_project_summary(project_response)
 
-    # download project files
-    files = []
+    if project_dir is None:
+        project_dir = tempfile.TemporaryDirectory().name
+    os.makedirs(project_dir, exist_ok=True)
+    os.chdir(project_dir)
 
-    project_dir = os.getcwd()
     logger.info("Project dir: %s", project_dir)
 
-    for file in project_summary.files:
-        if file.status == "processing_completed":
-            dst = os.path.join(project_dir, file.name)
-            _download_file(file, project_uuid, dst)
-            files.append(dst)
-        else:
-            logger.warning(
-                "File %s is not ready to be downloaded (status: %s)",
-                file.name,
-                file.status,
-            )
+    # download project files
+    files = []
+    if download_files:
+        for file in project_summary.files:
+            if file.status == "processing_completed":
+                dst = os.path.join(project_dir, file.name)
+                _download_file(file, project_uuid, dst, overwrite=overwrite)
+                files.append(dst)
+            else:
+                logger.warning(
+                    "File %s is not ready to be downloaded (status: %s)",
+                    file.name,
+                    file.status,
+                )
+
+    # For loading custom leaf systems
+    utils.add_py_init_file(project_dir)
+    if project_dir not in sys.path:
+        sys.path.append(project_dir)
 
     # Must first register submodels
     submodels_response = api.get(f"/project/{project_uuid}/submodels")
@@ -599,18 +772,19 @@ def create_project(name: str) -> Project:
     return Project(summary=summary, models={}, files=[], submodels={})
 
 
-def get_or_create_project(name: str) -> Project:
+def get_or_create_project(name: str, **kwargs) -> Project:
     """
     Retrieves a project by its name or creates a new one if it doesn't exist.
 
     Args:
         name (str): The name of the project.
+        **kwargs: Additional keyword arguments. See get_project_by_uuid() for details.
 
     Returns:
         ProjectSummary: The summary of the retrieved or created project.
     """
     try:
-        return get_project_by_name(name)
+        return get_project_by_name(name, **kwargs)
     except api.CollimatorNotFoundError:
         return create_project(name)
 
@@ -626,83 +800,6 @@ def delete_project(project_uuid: str):
     api.call(f"/projects/{project_uuid}", "DELETE")
 
 
-def upload_file(project_uuid: str, name: str, fp: IO[AnyStr], overwrite=True):
-    """
-    Uploads a file to a project.
-
-    Args:
-        project_uuid (str): The UUID of the project.
-        name (str): The name of the file.
-        fp (IO[AnyStr]): The file pointer of the file to be uploaded.
-        overwrite (bool, optional): Flag indicating whether to overwrite an existing file with the same name.
-            Defaults to True.
-
-    Returns:
-        dict: A dictionary containing the summary of the uploaded file.
-
-    Raises:
-        api.CollimatorApiError: If the file upload fails.
-    """
-
-    mime_type, _ = mimetypes.guess_type(name)
-    size = os.fstat(fp.fileno()).st_size
-
-    logger.info(
-        "Uploading file %s (type: %s, size: %d) to project %s...",
-        name,
-        mime_type,
-        size,
-        project_uuid,
-    )
-    body = {
-        "name": name,
-        "content_type": mime_type,
-        "overwrite": overwrite,
-        "size": size,
-    }
-    put_url_response = api.call(f"/projects/{project_uuid}/files", "POST", body=body)
-    s3_presigned_url = put_url_response["put_presigned_url"]
-    s3_response = requests.put(
-        s3_presigned_url,
-        headers={"Content-Type": mime_type},
-        data=fp,
-        verify=False,
-    )
-    if s3_response.status_code != 200:
-        logger.error("s3 upload failed: %s", s3_response.text)
-        raise api.CollimatorApiError(
-            f"Failed to upload file {name} to project {project_uuid}"
-        )
-    file_uuid = put_url_response["summary"]["uuid"]
-    process_response = api.call(
-        f"/projects/{project_uuid}/files/{file_uuid}/process", "POST"
-    )
-    return process_response["summary"]
-
-
-def upload_files(project_uuid: str, files: list[str], overwrite=True):
-    """
-    Uploads multiple files to a project.
-
-    Args:
-        project_uuid (str): The UUID of the project.
-        files (list[str]): A list of file paths to be uploaded.
-        overwrite (bool, optional): Flag indicating whether to overwrite existing files.
-            Defaults to True.
-    """
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = []
-        for file in files:
-            with open(file, "rb") as fp:
-                futures.append(
-                    executor.submit(
-                        upload_file, project_uuid, os.path.basename(file), fp, overwrite
-                    )
-                )
-        for future in concurrent.futures.as_completed(futures):
-            future.result()
-
-
 def stop_simulation(model_uuid: str, simulation_uuid: str) -> dict:
     """
     Stops a running simulation.
@@ -715,10 +812,7 @@ def stop_simulation(model_uuid: str, simulation_uuid: str) -> dict:
         dict: The response from the API call.
 
     """
-    return api.post(
-        f"/models/{model_uuid}/simulations/{simulation_uuid}/events",
-        body={"command": "stop"},
-    )
+    return api.post(f"/jobs/{simulation_uuid}/stop")
 
 
 class SimulationFailedError(api.CollimatorApiError):
@@ -792,14 +886,21 @@ async def simulate(
                 model_parameter_sweeps.append(
                     {
                         "parameter_name": param_name,
-                        "sweep_expression": str(param_value.values),
+                        "sweep_values": {
+                            "sweep_kind": "array",
+                            "values": str(param_value.values),
+                        },
                     }
                 )
             elif isinstance(param_value, ensemble.RandomDistribution):
                 model_parameter_sweeps.append(
                     {
                         "parameter_name": param_name,
-                        "sweep_expression": f"np.random.{param_value.distribution}(**{param_value.parameters})",
+                        "sweep_values": {
+                            "sweep_kind": "distribution",
+                            "distribution_name": param_value.distribution,
+                            "parameters": param_value.parameters,
+                        },
                     }
                 )
             elif isinstance(param_value, (float, int, bool, str)):
@@ -828,16 +929,21 @@ async def simulate(
         if has_random_distrib:
             body["model_overrides"]["ensemble_config"]["num_sims"] = num_simulations
 
-    summary = api.post(f"/models/{model_uuid}/simulations", body=body)
+    try:
+        summary = api.post(f"/models/{model_uuid}/simulations", body=body)
 
-    # wait for simulation completion
-    while summary["status"] not in ("completed", "failed"):
-        await asyncio.sleep(1)
-        logger.info("Waiting for simulation to complete...")
-        summary = api.get(f"/models/{model_uuid}/simulations/{summary['uuid']}")
-        if timeout is not None and time.perf_counter() - start_time > timeout:
-            stop_simulation(model_uuid, summary["uuid"])
-            raise TimeoutError
+        # wait for simulation completion
+        while summary["status"] not in ("completed", "failed"):
+            await asyncio.sleep(1)
+            logger.info("Waiting for simulation to complete...")
+            summary = api.get(f"/models/{model_uuid}/simulations/{summary['uuid']}")
+            if timeout is not None and time.perf_counter() - start_time > timeout:
+                stop_simulation(model_uuid, summary["uuid"])
+                raise TimeoutError
+    except asyncio.CancelledError:  # happens on KeyboardInterrupt
+        logger.info("Simulation interrupted")
+        stop_simulation(model_uuid, summary["uuid"])
+        raise
 
     logs = api.get(f"/models/{model_uuid}/simulations/{summary['uuid']}/logs")
     logger.info(logs)

@@ -1,0 +1,455 @@
+{
+  "uuid": "ab1c6944-7d4a-49d6-b4d4-bdd11a9e68fc",
+  "name": "pendulum",
+  "diagram": {
+    "nodes": [
+      {
+        "uuid": "71109d89-dfd6-46dc-84fd-8e2c2d140eb5",
+        "name": "tau",
+        "type": "core.Inport",
+        "inputs": [],
+        "outputs": [
+          {
+            "name": "out_0",
+            "kind": "static"
+          }
+        ],
+        "parameters": {
+          "port_id": {
+            "value": "0"
+          },
+          "description": {
+            "value": "",
+            "is_string": true
+          }
+        },
+        "uiprops": {
+          "x": -200,
+          "y": 64
+        }
+      },
+      {
+        "uuid": "882813c8-70b7-4bb4-9a67-089051a633eb",
+        "name": "theta",
+        "type": "core.Outport",
+        "inputs": [
+          {
+            "name": "in_0",
+            "kind": "static"
+          }
+        ],
+        "outputs": [],
+        "parameters": {
+          "port_id": {
+            "value": "0"
+          },
+          "description": {
+            "value": "",
+            "is_string": true
+          }
+        },
+        "uiprops": {
+          "x": 248,
+          "y": 32
+        }
+      },
+      {
+        "uuid": "6809f451-2c9b-4a91-be8b-36a8c94f18f7",
+        "name": "dot_pendulum",
+        "type": "core.PythonScript",
+        "inputs": [
+          {
+            "name": "theta",
+            "kind": "dynamic"
+          },
+          {
+            "name": "omega",
+            "kind": "dynamic"
+          },
+          {
+            "name": "u",
+            "kind": "dynamic"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "dot_state",
+            "kind": "dynamic"
+          }
+        ],
+        "parameters": {
+          "L": {
+            "value": "L"
+          },
+          "d": {
+            "value": "d"
+          },
+          "g": {
+            "value": "g"
+          },
+          "m": {
+            "value": "m"
+          },
+          "init_script": {
+            "value": "# import numpy as np\nimport jax.numpy as jnp\nmL2 = m * L**2\n",
+            "is_string": true
+          },
+          "finalize_script": {
+            "value": "",
+            "is_string": true
+          },
+          "user_statements": {
+            "value": "dot_theta = omega\ndot_omega = u / mL2 - d * omega / mL2 - g * jnp.sin(theta) / L\n\ndot_state = jnp.array([dot_theta, dot_omega[0]])",
+            "is_string": true
+          },
+          "accelerate_with_jax": {
+            "value": "true"
+          }
+        },
+        "time_mode": "agnostic",
+        "uiprops": {
+          "x": -56,
+          "y": 48,
+          "port_alignment": "spaced"
+        }
+      },
+      {
+        "uuid": "431d2654-e5cf-4494-8ba7-90a9191c5d4d",
+        "name": "true_state",
+        "type": "core.Demux",
+        "inputs": [
+          {
+            "name": "in_0",
+            "kind": "static"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "_theta",
+            "kind": "dynamic"
+          },
+          {
+            "name": "_omega",
+            "kind": "dynamic"
+          }
+        ],
+        "parameters": {},
+        "uiprops": {
+          "x": 128,
+          "y": 48,
+          "grid_height": 8,
+          "grid_width": 8,
+          "port_alignment": "spaced"
+        }
+      },
+      {
+        "uuid": "a6194cf6-f398-4f8c-bf2a-c4b58477e54d",
+        "name": "Integrator_0",
+        "type": "core.Integrator",
+        "inputs": [
+          {
+            "name": "in_0",
+            "kind": "static"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "out_0",
+            "kind": "static"
+          }
+        ],
+        "parameters": {
+          "enable_hold": {
+            "value": "false"
+          },
+          "lower_limit": {
+            "value": "-1.0"
+          },
+          "upper_limit": {
+            "value": "1.0"
+          },
+          "enable_reset": {
+            "value": "false"
+          },
+          "enable_limits": {
+            "value": "false"
+          },
+          "initial_states": {
+            "value": "[theta_0, omega_0]"
+          },
+          "enable_external_reset": {
+            "value": "true"
+          }
+        },
+        "uiprops": {
+          "x": 40,
+          "y": 48,
+          "port_alignment": "spaced"
+        }
+      }
+    ],
+    "links": [
+      {
+        "uuid": "9da828d4-42f4-4841-a9fc-e0a4839c87aa",
+        "src": {
+          "node": "71109d89-dfd6-46dc-84fd-8e2c2d140eb5",
+          "port": 0
+        },
+        "dst": {
+          "node": "6809f451-2c9b-4a91-be8b-36a8c94f18f7",
+          "port": 2,
+          "port_side": "inputs"
+        },
+        "uiprops": {
+          "link_type": {
+            "connection_method": "direct_to_block"
+          },
+          "segments": [],
+          "hang_coord_end": {
+            "x": -8,
+            "y": 96
+          }
+        }
+      },
+      {
+        "uuid": "664a133c-addc-4f05-8095-9c92631f01ec",
+        "src": {
+          "node": "6809f451-2c9b-4a91-be8b-36a8c94f18f7",
+          "port": 0
+        },
+        "dst": {
+          "node": "a6194cf6-f398-4f8c-bf2a-c4b58477e54d",
+          "port": 0,
+          "port_side": "inputs"
+        },
+        "uiprops": {
+          "link_type": {
+            "connection_method": "direct_to_block"
+          },
+          "segments": [],
+          "hang_coord_end": {
+            "x": 40,
+            "y": 80
+          }
+        }
+      },
+      {
+        "uuid": "1bca1d3d-6890-43fe-ae19-7d0dbfbcd7a9",
+        "src": {
+          "node": "a6194cf6-f398-4f8c-bf2a-c4b58477e54d",
+          "port": 0
+        },
+        "dst": {
+          "node": "431d2654-e5cf-4494-8ba7-90a9191c5d4d",
+          "port": 0,
+          "port_side": "inputs"
+        },
+        "uiprops": {
+          "link_type": {
+            "connection_method": "direct_to_block"
+          },
+          "segments": [],
+          "hang_coord_end": {
+            "x": 128,
+            "y": 80
+          }
+        }
+      },
+      {
+        "uuid": "b0949b96-b235-4947-b4dc-14704264e181",
+        "src": {
+          "node": "431d2654-e5cf-4494-8ba7-90a9191c5d4d",
+          "port": 0
+        },
+        "dst": {
+          "node": "882813c8-70b7-4bb4-9a67-089051a633eb",
+          "port": 0,
+          "port_side": "inputs"
+        },
+        "uiprops": {
+          "link_type": {
+            "connection_method": "direct_to_block"
+          },
+          "segments": [
+            {
+              "segment_direction": "vert",
+              "coordinate": 208
+            },
+            {
+              "segment_direction": "horiz",
+              "coordinate": 64
+            },
+            {
+              "segment_direction": "vert",
+              "coordinate": 224
+            },
+            {
+              "segment_direction": "horiz",
+              "coordinate": 64
+            },
+            {
+              "segment_direction": "vert",
+              "coordinate": 240
+            }
+          ],
+          "hang_coord_end": {
+            "x": 248,
+            "y": 72
+          }
+        }
+      },
+      {
+        "uuid": "c8d54140-6c71-4370-a398-fac5a61649a1",
+        "src": {
+          "node": "431d2654-e5cf-4494-8ba7-90a9191c5d4d",
+          "port": 0
+        },
+        "dst": {
+          "node": "6809f451-2c9b-4a91-be8b-36a8c94f18f7",
+          "port": 0
+        },
+        "uiprops": {
+          "link_type": {
+            "tap_coordinate": 232,
+            "tapped_segment": {
+              "segment_type": "real",
+              "tapped_segment_index": 3,
+              "tapped_segment_direction": "horiz"
+            },
+            "tapped_link_uuid": "b0949b96-b235-4947-b4dc-14704264e181",
+            "connection_method": "link_tap"
+          },
+          "segments": [
+            {
+              "segment_direction": "horiz",
+              "coordinate": 24
+            },
+            {
+              "segment_direction": "vert",
+              "coordinate": -96
+            },
+            {
+              "segment_direction": "horiz",
+              "coordinate": 64
+            },
+            {
+              "segment_direction": "vert",
+              "coordinate": -72
+            }
+          ]
+        }
+      },
+      {
+        "uuid": "70c41fc3-cbd4-4305-8d36-8146504aef48",
+        "src": {
+          "node": "431d2654-e5cf-4494-8ba7-90a9191c5d4d",
+          "port": 1
+        },
+        "dst": {
+          "node": "6809f451-2c9b-4a91-be8b-36a8c94f18f7",
+          "port": 1,
+          "port_side": "inputs"
+        },
+        "uiprops": {
+          "link_type": {
+            "connection_method": "direct_to_block"
+          },
+          "segments": [
+            {
+              "segment_direction": "vert",
+              "coordinate": 232
+            },
+            {
+              "segment_direction": "horiz",
+              "coordinate": 136
+            },
+            {
+              "segment_direction": "vert",
+              "coordinate": -96
+            }
+          ],
+          "hang_coord_end": {
+            "x": -56,
+            "y": 80
+          }
+        }
+      }
+    ],
+    "annotations": [],
+    "uuid": "dfe1863f-2c02-4746-b300-3ec3ec109ceb"
+  },
+  "subdiagrams": {
+    "diagrams": {},
+    "references": {}
+  },
+  "submodel_configuration": {},
+  "parameter_definitions": [
+    {
+      "uuid": "7ffffde0-7c00-40c0-8998-b5b7a0959d56",
+      "name": "m",
+      "default_value": "1.0",
+      "description": "mass of bob",
+      "uiprops": {
+        "description_height": "22px",
+        "default_value_height": "22px"
+      }
+    },
+    {
+      "uuid": "ad16e195-d52e-4948-9d30-4ee124a7b30d",
+      "name": "L",
+      "default_value": "1.0",
+      "description": "Length of the pendulum",
+      "uiprops": {
+        "description_height": "22px",
+        "default_value_height": "22px"
+      }
+    },
+    {
+      "uuid": "3cb13500-d3db-42d0-876b-a79ee9776b46",
+      "name": "g",
+      "default_value": "9.8",
+      "description": "Acceleration due to gravity",
+      "uiprops": {
+        "description_height": "22px",
+        "default_value_height": "22px"
+      }
+    },
+    {
+      "uuid": "9cb38812-c64a-4cc9-989f-17284a2eacfd",
+      "name": "d",
+      "default_value": "0.2",
+      "description": "damping coefficient at pivot",
+      "uiprops": {
+        "description_height": "22px",
+        "default_value_height": "22px"
+      }
+    },
+    {
+      "uuid": "cd9c97b1-6ab7-4ed3-a8c9-1bcf6fb19ffc",
+      "name": "theta_0",
+      "default_value": "0.0",
+      "description": "initial value of theta",
+      "uiprops": {
+        "description_height": "22px",
+        "default_value_height": "22px"
+      }
+    },
+    {
+      "uuid": "fd1d69ba-6320-493b-8aee-90e20269e15b",
+      "name": "omega_0",
+      "default_value": "0.0",
+      "description": "initial value of omega",
+      "uiprops": {
+        "description_height": "22px",
+        "default_value_height": "22px"
+      }
+    }
+  ],
+  "state_machines": {},
+  "owner_uuid": "00000000-0000-0000-0000-000000000000",
+  "project_uuid": "700e7c9c-831e-4743-9e5f-bed17fe1cbc3",
+  "is_global": false,
+  "version": 2,
+  "schema_version": "4",
+  "kind": "Submodel"
+}

@@ -14,6 +14,8 @@
 Utilities for reading csv files and extracting columns of data.
 """
 
+import numpy as np
+
 from ...backend import numpy_api as cnp
 from ...lazy_loader import LazyLoader
 
@@ -45,6 +47,9 @@ def extract_columns(df, cols):
     Returns:
         A numpy array of the extracted columns from the DataFrame.
     """
+
+    if isinstance(cols, np.ndarray):
+        cols = cols.tolist()
 
     if isinstance(cols, (list, tuple)) and len(cols) == 1:
         cols = cols[0]

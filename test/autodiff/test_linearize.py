@@ -17,6 +17,10 @@ import control
 import collimator
 from collimator.library import linearize
 from collimator.models import PendulumDiagram
+from collimator.testing.markers import skip_if_not_jax
+
+
+skip_if_not_jax()
 
 
 def test_pendulum_linearize_down():

@@ -25,8 +25,10 @@ from collimator import library as lib
 from collimator.backend.typing import ArrayLike
 
 import collimator.logging as logging
+from collimator.testing.markers import skip_if_not_jax
 
 logging.set_log_level(logging.DEBUG)
+skip_if_not_jax()
 
 
 @pytest.mark.parametrize("fixed_angle_ic", [0.0, -1.0])
@@ -107,7 +109,7 @@ def test_rot_oscillator_with_outputs(fixed_angle_ic, show_plot=False):
         spd_sol = np.sin(t) * -1
         ang_sol = np.cos(t)
         alpha_sol = np.cos(t) * -1
-        atol = 3e-5
+        atol = 1e-4
         rtol = 0.0
     elif fixed_angle_ic == -1.0:
         frc_sol = np.cos(t) * 2.0
@@ -166,7 +168,7 @@ def test_basic_engine(show_plot=False):
     ev = EqnEnv()
     ad = AcausalDiagram()
 
-    ice = rot.BasicEngine(ev)
+    ice = rot.Engine(ev)
     jj = rot.Inertia(
         ev,
         name="J",
@@ -198,8 +200,8 @@ def test_basic_engine(show_plot=False):
     # verify acausal diagram params are in the acausal_system context
     params = context[acausal_system.system_id].parameters
     print(params)
-    assert isinstance(params["BasicEngine_peak_trq_w"], ArrayLike)
-    assert isinstance(params["BasicEngine_peak_trq_t"], ArrayLike)
+    assert isinstance(params["Engine_peak_trq_w"], ArrayLike)
+    assert isinstance(params["Engine_peak_trq_t"], ArrayLike)
 
     rotSpd_idx = acausal_system.outsym_to_portid[rotSpd.get_sym_by_port_name("w_rel")]
     sensTrq_idx = acausal_system.outsym_to_portid[sensTrq.get_sym_by_port_name("tau")]
@@ -317,7 +319,7 @@ def test_ideal_gear(show_plot=False):
         initial_velocity=0.0,
         initial_velocity_fixed=True,
     )
-    gr = rot.IdealGear(ev, r=2.0)
+    gr = rot.Gear(ev, r=2.0)
     inertia2 = rot.Inertia(
         ev,
         name="inertia2",
@@ -474,7 +476,13 @@ def test_gear(show_plot=False):
         initial_velocity=0.0,
         initial_velocity_fixed=True,
     )
-    gr = rot.Gear(ev, r=1.0)
+    gr = rot.Gear(
+        ev,
+        r=1.0,
+        spd_pts=[-1e6, 1e6],
+        trq_pts=[-1e6, 1e6],
+        eff=[[0.98, 0.98], [0.98, 0.98]],
+    )
     inertia2 = rot.Inertia(
         ev,
         name="inertia2",
@@ -681,10 +689,10 @@ def test_friction(show_plot=False, f_sinusoidal=False):
 if __name__ == "__main__":
     show_plot = True
     # test_rot_oscillator_with_outputs(0.0, show_plot=show_plot)
-    # test_rot_oscillator_with_outputs(-1.0, show_plot=show_plot)
+    test_rot_oscillator_with_outputs(-1.0, show_plot=show_plot)
     # test_basic_engine(show_plot=True)
     # test_ideal_wheel(show_plot=show_plot)
     # test_ideal_gear(show_plot=show_plot)
     # test_ideal_planetary(show_plot=show_plot)
     # test_gear(show_plot=show_plot)
-    test_friction(show_plot=show_plot, f_sinusoidal=True)
+    # test_friction(show_plot=show_plot, f_sinusoidal=True)

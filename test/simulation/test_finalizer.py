@@ -14,6 +14,7 @@ import pytest
 import collimator
 
 from collimator.logging import logger
+from collimator.testing import set_backend
 
 
 class BlockWithFinalizer(collimator.LeafSystem):
@@ -52,7 +53,7 @@ def build_diagram_with_group_and_finalizer():
 @pytest.mark.minimal
 @pytest.mark.parametrize("backend", ["jax", "numpy"])
 def test_finalizer(backend: str):
-    collimator.set_backend(backend)
+    set_backend(backend)
 
     diagram, ref1, ref2, ref3 = build_diagram_with_group_and_finalizer()
     assert not ref1["finalized"]

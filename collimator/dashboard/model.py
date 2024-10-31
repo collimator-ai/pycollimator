@@ -20,6 +20,9 @@ from . import api
 logger = logging.getLogger(__name__)
 
 
+# TODO: use ToApiMixin to convert model_json.Model to json load
+
+
 def get_reference_submodel(project_uuid: str, model_uuid: str) -> model_json.Model:
     """
     Retrieves the reference submodel for a given project UUID and model UUID.

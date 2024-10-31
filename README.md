@@ -4,6 +4,12 @@
 
 Python 3.10 or later is required.
 
+`collimator` has been developed and tested on Linux (Ubuntu 22+) and macOS.
+
+Native Windows support has not been tested at this time but may work. We
+recommend using the [Windows Subsystem for Linux](https://docs.microsoft.com/en-us/windows/wsl/install-win10)
+with an Ubuntu distribution instead.
+
 ### Installation steps
 
 ```bash

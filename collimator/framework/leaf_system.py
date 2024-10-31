@@ -38,6 +38,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import tree_util
+from jax.typing import ArrayLike
 
 from . import build_recorder
 
@@ -66,7 +67,7 @@ from .event import (
     ZeroCrossingEvent,
     ZeroCrossingEventData,
 )
-from .parameter import Parameter
+from .parameter import Parameter, with_resolved_parameters
 
 if TYPE_CHECKING:
     from ..backend.typing import (
@@ -86,17 +87,33 @@ _mark_up_to_date = partial(mark_cache, is_out_of_date=False)
 _mark_out_of_date = partial(mark_cache, is_out_of_date=True)
 
 
-def _resolve_params(func):
-    def wrapper(*args, **kwargs):
-        args = [arg.get() if isinstance(arg, Parameter) else arg for arg in args]
-        kwargs = {
-            k: v.get() if isinstance(v, Parameter) else v for k, v in kwargs.items()
-        }
+def _array_like(a, b):
+    return isinstance(a, ArrayLike) and isinstance(b, ArrayLike)
 
-        result = func(*args, **kwargs)
-        return result
 
-    return wrapper
+def _check_values_compatible(original_val, new_val):
+    """This function is used in functions that reset default values.
+    With jax backend if the new default values do not have the same types
+    and shapes, the callbacks need to be jax-recompiled."""
+
+    if cnp.active_backend != "jax":
+        return
+
+    if _array_like(new_val, original_val):
+        if new_val.shape != original_val.shape:
+            raise ValueError(
+                f"Cannot change default value shape from {original_val.shape} to {new_val.shape}"
+            )
+        if new_val.dtype != original_val.dtype:
+            raise ValueError(
+                f"Cannot change default value dtype from {original_val.dtype} to {new_val.dtype}"
+            )
+        return
+
+    if not isinstance(new_val, type(original_val)):
+        raise ValueError(
+            f"Cannot change default value type from {type(original_val)} to {type(new_val)}"
+        )
 
 
 class InitializeParameterResolver(ABCMeta):
@@ -110,21 +127,23 @@ class InitializeParameterResolver(ABCMeta):
     def __new__(cls, name, bases, dct):
         if "initialize" in dct:
             orig_initialize = dct["initialize"]
-            dct["initialize"] = _resolve_params(orig_initialize)
+            dct["initialize"] = with_resolved_parameters(orig_initialize)
 
-            if "__init__" in dct:
-                orig_init = dct["__init__"]
+        if "reset_default_values" in dct:
+            orig_reset_default_values = dct["reset_default_values"]
+            dct["reset_default_values"] = with_resolved_parameters(
+                orig_reset_default_values
+            )
 
-                @wraps(orig_init)
-                def new_init(self, *args, **kwargs):
-                    orig_init(self, *args, **kwargs)
-                    build_recorder.create_block(self, orig_init, *args, **kwargs)
+        if "__init__" in dct:
+            orig_init = dct["__init__"]
 
-                    # Only call initialize on the actual class, not on the base class
-                    if type(self).__name__ == name:
-                        self.initialize(**self.parameters)
+            @wraps(orig_init)
+            def new_init(self, *args, **kwargs):
+                orig_init(self, *args, **kwargs)
+                build_recorder.create_block(self, orig_init, *args, **kwargs)
 
-                dct["__init__"] = new_init
+            dct["__init__"] = new_init
 
         return super().__new__(cls, name, bases, dct)
 
@@ -173,6 +192,7 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
         # guard function and reset map also takes optional `start_mode` and `end_mode`
         # arguments.
         self._default_mode: int = None
+        self._mode_output_port_idx: int = None
 
         # Set of "template" values for the sample-and-hold output ports, if known.
         # If not known, these will be `None`, in which case an appropriate value is
@@ -235,7 +255,7 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
     # Event handling
     #
     def wrap_callback(
-        self, callback: Callable, collect_inputs: bool = True
+        self, callback: Callable, collect_inputs: bool | list[int] = True
     ) -> Callable:
         """Wrap an update function to unpack local variables and block inputs.
 
@@ -266,7 +286,8 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
                 Normally this should be True, but it can be set to False if the
                 return value depends only on the state but not inputs, for
                 instance. This helps reduce the number of expressions that need to
-                be JIT compiled. Default is True.
+                be JIT compiled. Can also be specified as a list of integer port indices.
+                Default is True (collect all inputs).
 
         Returns:
             Callable:
@@ -274,10 +295,13 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
         """
 
         def _wrapped_callback(context: ContextBase) -> LeafStateComponent:
-            if collect_inputs:
-                inputs = self.collect_inputs(context)
+            if isinstance(collect_inputs, bool):
+                # If port_indices is None, all inputs will be returned
+                port_indices = None if collect_inputs else []
             else:
-                inputs = ()
+                port_indices = collect_inputs  # List of specific ports to get
+
+            inputs = self.collect_inputs(context, port_indices)
             leaf_context: LeafContext = context[self.system_id]
 
             leaf_state = leaf_context.state
@@ -466,6 +490,8 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
 
         return callback_index
 
+    # NOTE: we can only declare one continuous state per system because each
+    # call will overwrite self._default_continuous_state
     def declare_continuous_state(
         self,
         shape: ShapeLike = None,
@@ -673,6 +699,8 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
         # the identity.
         return self._mass_matrix is not None
 
+    # FIXME: this doesn't support multiple discrete states as the docstring
+    # suggests.
     def declare_discrete_state(
         self,
         shape: ShapeLike = None,
@@ -725,18 +753,35 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
 
         self._default_discrete_state = default_value
 
+    def configure_discrete_state_default_value(
+        self, default_value: Array, as_array: bool = True
+    ):
+        if as_array:
+            dtype = self._default_discrete_state.dtype
+            shape = self._default_discrete_state.shape
+            default_value = utils.make_array(default_value, dtype=dtype, shape=shape)
+
+        # Tree-map the default value to ensure that it is an array-like with the
+        # correct shape and dtype. This is necessary because the default value
+        # may be a list, tuple, or other PyTree-structured object.
+        default_value = tree_util.tree_map(cnp.asarray, default_value)
+
+        _check_values_compatible(self._default_discrete_state, default_value)
+
+        self._default_discrete_state = default_value
+
     #
     # I/O declaration
     #
     def declare_output_port(
         self,
         callback: Callable = None,
-        period: float | Parameter = None,
-        offset: float | Parameter = 0.0,
+        period: float = None,
+        offset: float = 0.0,
         name: str = None,
         prerequisites_of_calc: List[DependencyTicket] = None,
-        default_value: Array | Parameter = None,
-        requires_inputs: bool = True,
+        default_value: Array = None,
+        requires_inputs: bool | list[int] = True,
     ) -> int:
         """Declare an output port in the LeafSystem.
 
@@ -761,10 +806,11 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
                 The name of the output port. Defaults to None.
             default_value (Array, optional):
                 The default value of the output port, if known. Defaults to None.
-            requires_inputs (bool, optional):
+            requires_inputs (bool | list[int], optional):
                 If True, the callback will eval input ports to gather input values.
                 This will add a bit to compile time, so setting to False where possible
-                is recommended. Defaults to True.
+                is recommended. Can also be specified as a list of integer port indices.
+                Defaults to True (collect all inputs).
             prerequisites_of_calc (List[DependencyTicket], optional):
                 The dependency tickets for the output port computation.  Defaults to
                 None, in which case the assumption is a dependency on either (nothing)
@@ -807,10 +853,10 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
         self,
         port_index: int,
         callback: Callable,
-        period: float | Parameter = None,
-        offset: float | Parameter = 0.0,
+        period: float = None,
+        offset: float = 0.0,
         prerequisites_of_calc: List[DependencyTicket] = None,
-        default_value: Array | Parameter = None,
+        default_value: Array = None,
         requires_inputs: bool = True,
     ):
         """Configure an output port in the LeafSystem.
@@ -892,6 +938,51 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
             cache_index=cache_index,
         )
 
+    def configure_continuous_state_default_value(
+        self, callback_idx: int, default_value: Array, as_array: bool = True
+    ):
+        if as_array:
+            dtype = self._default_continuous_state.dtype
+            shape = self._default_continuous_state.shape
+            default_value = utils.make_array(default_value, dtype=dtype, shape=shape)
+
+        # Tree-map the default value to ensure that it is an array-like with the
+        # correct shape and dtype. This is necessary because the default value
+        # may be a list, tuple, or other PyTree-structured object.
+        default_value = tree_util.tree_map(cnp.asarray, default_value)
+
+        _check_values_compatible(self._default_continuous_state, default_value)
+
+        self._default_continuous_state = default_value
+        if self._continuous_state_output_port_idx is not None:
+            port = self.output_ports[self._continuous_state_output_port_idx]
+            port.default_value = default_value
+            self._default_cache[port.cache_index] = default_value
+
+    def configure_output_port_default_value(
+        self,
+        port_index: int,
+        default_value: Array,
+    ):
+        port = self.output_ports[port_index]
+        if port.event is None:
+            logger.warning(
+                "period is None so default_value is not used for port %d in block %s",
+                port_index,
+                self.name,
+            )
+            return
+        default_value = cnp.array(default_value)
+        cache_index = self.output_ports[port_index].cache_index
+
+        if cache_index is None:
+            raise ValueError(
+                "Output port does not have a cache index, so default value cannot be set"
+            )
+
+        _check_values_compatible(self._default_cache[cache_index], default_value)
+        self._default_cache[cache_index] = default_value
+
     def declare_continuous_state_output(
         self,
         name: str = None,
@@ -941,13 +1032,15 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
         def _callback(time: Scalar, state: LeafState, *inputs, **parameters):
             return state.mode
 
-        return self.declare_output_port(
+        self._mode_output_port_idx = self.declare_output_port(
             _callback,
             name=name,
             prerequisites_of_calc=[DependencyTicket.mode],
             default_value=self._default_mode,
             requires_inputs=False,
         )
+
+        return self._mode_output_port_idx
 
     #
     # Event declaration
@@ -1026,6 +1119,11 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
 
     def declare_default_mode(self, mode: int):
         self._default_mode = mode
+
+    def configure_default_mode(self, mode: int):
+        self._default_mode = mode
+        if self._mode_output_port_idx:
+            self.configure_output_port_default_value(self._mode_output_port_idx, mode)
 
     def declare_zero_crossing(
         self,
@@ -1164,7 +1262,7 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
         # Users should not need to call this directly - the state will be created
         # as part of the context.  Generally, `system.create_context()` should
         # be all that's necessary for initialization.
-
+        self.reset_default_values(**self.dynamic_parameters)
         return LeafState(
             name=self.name,
             continuous_state=self._default_continuous_state,
@@ -1176,7 +1274,7 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
     def initialize_static_data(self, context: ContextBase):
         # Try to infer any missing default values for "sample-and-hold" output ports
         # and any other cached computations.
-        cached_callbacks: list(SystemCallback) = [
+        cached_callbacks: list[SystemCallback] = [
             cb for cb in self.callbacks if cb.cache_index is not None
         ]
 
@@ -1217,6 +1315,9 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
     # Inherits docstring from SystemBase.get_feedthrough
     def get_feedthrough(self) -> List[Tuple[int, int]]:
         # NOTE: This implementation is basically a direct port of the Drake algorithm
+
+        if self.dependency_graph is None:
+            raise ValueError("Must create dependency graph first.")
 
         # If we already did this or it was set manually, return the stored value
         if self.feedthrough_pairs is not None:
@@ -1259,7 +1360,9 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
             # Notify subscribers of a value change in the input, invalidating all
             # downstream cache values
             input_tracker = self.dependency_graph[input_port.ticket]
-            cache = input_tracker.notify_subscribers(cache, self.dependency_graph)
+            cache = input_tracker.notify_subscribers(
+                cache, self.dependency_graph, local_only=True
+            )
 
             # If the output cache is now out of date, this is a feedthrough path
             if cache[output_port.callback_index].is_out_of_date:
@@ -1280,6 +1383,17 @@ class LeafSystem(SystemBase, metaclass=InitializeParameterResolver):
 
         self.feedthrough_pairs = feedthrough
         return self.feedthrough_pairs
+
+    def reset_default_values(self, **dynamic_parameters):
+        """This function is used to reset default values for
+        continuous/discrete states, ports and mode based on dynamic parameters.
+        It is called in `create_state()` and used to reset states in ensemble sims
+        and optimization with the context method `with_new_state()`.
+
+        Note that dtypes and shapes can't be changed after initialization because
+        the diagram may already have been jax-compiled. Only values may change.
+        """
+        pass
 
 
 #
@@ -1356,7 +1470,7 @@ def _wrap_reset_map(
         # if the event is terminal, since the state does not advance after the event.
         # Note that this can use standard Python control flow because it is known
         # at compile time whether an event is terminal or not.
-        if not context.has_continuous_state:
+        if not context[system_id].has_continuous_state:
             # Can't "zero out" the continuous state if it doesn't exist
             xdot_plus = None
         elif is_terminal:

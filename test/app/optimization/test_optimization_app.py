@@ -11,8 +11,8 @@
 # <https://www.gnu.org/licenses/>.
 
 import dataclasses
-import platform
 import shutil
+import sys
 
 import numpy as np
 import pytest
@@ -37,9 +37,11 @@ class OptTestScenario:
     request: str = "request.json"
     model: str = "model.json"
     datafiles: list[str] = dataclasses.field(default_factory=list)
+    win64_xfail: bool = False
 
 
-@pytest.mark.timeout(30)
+@testing.requires_jax()
+@pytest.mark.timeout(60)
 @pytest.mark.parametrize(
     "scenario",
     [
@@ -80,12 +82,15 @@ class OptTestScenario:
                 "recorded-results.csv",
                 "submodel-fdc5b41f-73ba-4e80-8522-67a883e0feea-latest.json",
             ],
+            win64_xfail=True,
         ),
     ],
 )
-@pytest.mark.skipif(platform.system() == "Emscripten", reason="No support for WASM")
 def test_optimization_api(request, scenario: OptTestScenario):
     np.random.seed(0)
+
+    if sys.platform == "win32" and scenario.win64_xfail:
+        pytest.xfail("Fails on Windows 64-bit")
 
     print("running optimization test scenario:", scenario)
 

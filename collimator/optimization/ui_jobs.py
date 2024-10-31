@@ -19,9 +19,11 @@ import collimator
 from collimator.dashboard.serialization.ui_types import NodePathType
 from collimator.framework.context import ContextBase
 from collimator.framework.diagram import Diagram
+from collimator.framework.error import CallbackIsNotDifferentiableError
 from collimator.framework.port import OutputPort
 from collimator.framework.system_base import SystemBase
 from collimator.library import PID, Adder, Integrator, PIDDiscrete, Power, SourceBlock
+from collimator.library.custom import CustomPythonBlock
 from collimator.library.utils import extract_columns, read_csv
 from collimator.logging import logger
 from collimator.optimization.framework.base.optimizable import (
@@ -272,7 +274,7 @@ def _get_bounds(parameters):
     return bounds
 
 
-def _resolve_block_parameters(params: dict, blocks: dict[int, SystemBase]):
+def _resolve_pid_block_parameters(params: dict, blocks: dict[int, SystemBase]):
     rp = params.copy()
 
     for block_sys_id, blk in blocks.items():
@@ -306,6 +308,7 @@ class OptimizableModel(Optimizable):
         pid_blocks=None,
         pid_gains_init=None,
         algorithm=None,
+        sim_options=None,
     ):
         self.job_type = job_type
         transformation = None
@@ -389,6 +392,7 @@ class OptimizableModel(Optimizable):
             bounds=bounds,
             transformation=transformation,
             init_min_max=None,  # if exposed in the UI, construct from design_parameters
+            sim_options=sim_options,
         )
 
     def optimizable_params(self, context):
@@ -410,7 +414,8 @@ class OptimizableModel(Optimizable):
         return context
 
     def prepare_context_design_estimation(self, context, params):
-        return context.with_parameters(params)
+        context = context.with_parameters(params)
+        return context.with_new_state()
 
     def prepare_context_pid(self, context, params):
         for block_sys_id, blk in self.continuous_pids.items():
@@ -419,9 +424,14 @@ class OptimizableModel(Optimizable):
             kd = params[f"__kd_{block_sys_id}"]
             # We don't want to optimize over n:
             n = blk.parameters["n"].value
-            C = jnp.array([[(ki * n), ((kp * n + ki) - (kp + kd * n) * n)]])
-            D = jnp.array([[(kp + kd * n)]])
-            subcontext = context[block_sys_id].with_parameters({"C": C, "D": D})
+            subcontext = context[block_sys_id].with_parameters(
+                {
+                    "kp": kp,
+                    "ki": ki,
+                    "kd": kd,
+                    "n": n,
+                }
+            )
             context = context.with_subcontext(block_sys_id, subcontext)
 
         for block_sys_id in self.discrete_pids:
@@ -434,13 +444,6 @@ class OptimizableModel(Optimizable):
             context = context.with_subcontext(block_sys_id, subcontext)
 
         return context
-
-    def resolve_block_parameters(self, params: dict) -> dict[str, FloatWithSystem]:
-        if self.job_type != "pid":
-            return {k: FloatWithSystem(v) for k, v in params.items()}
-        return _resolve_block_parameters(
-            params, {**self.continuous_pids, **self.discrete_pids}
-        )
 
 
 class OptimizableModelWithStochasticVars(OptimizableWithStochasticVars):
@@ -456,6 +459,7 @@ class OptimizableModelWithStochasticVars(OptimizableWithStochasticVars):
         pid_blocks=None,
         pid_gains_init=None,
         algorithm=None,
+        sim_options=None,
     ):
         self.job_type = job_type
         transformation = None
@@ -535,6 +539,7 @@ class OptimizableModelWithStochasticVars(OptimizableWithStochasticVars):
             bounds=bounds,
             transformation=transformation,
             seed=None,
+            sim_options=sim_options,
         )
 
     def optimizable_params(self, context: ContextBase):
@@ -562,7 +567,8 @@ class OptimizableModelWithStochasticVars(OptimizableWithStochasticVars):
     def prepare_context_design(self, context, params, vars):
         params_and_vars = params.copy()
         params_and_vars.update(vars)
-        return context.with_parameters(params_and_vars)
+        context = context.with_parameters(params_and_vars)
+        return context.with_new_state()
 
     def prepare_context_pid(self, context, params, vars):
         for block_sys_id, blk in self.continuous_pids.items():
@@ -571,9 +577,14 @@ class OptimizableModelWithStochasticVars(OptimizableWithStochasticVars):
             kd = params[f"__kd_{block_sys_id}"]
             # We don't want to optimize over n:
             n = blk.parameters["n"].value
-            C = jnp.array([[(ki * n), ((kp * n + ki) - (kp + kd * n) * n)]])
-            D = jnp.array([[(kp + kd * n)]])
-            subcontext = context[block_sys_id].with_parameters({"C": C, "D": D})
+            subcontext = context[block_sys_id].with_parameters(
+                {
+                    "kp": kp,
+                    "ki": ki,
+                    "kd": kd,
+                    "n": n,
+                }
+            )
             context = context.with_subcontext(block_sys_id, subcontext)
 
         for block_sys_id in self.discrete_pids:
@@ -586,13 +597,6 @@ class OptimizableModelWithStochasticVars(OptimizableWithStochasticVars):
             context = context.with_subcontext(block_sys_id, subcontext)
 
         return context.with_parameters(vars)
-
-    def resolve_block_parameters(self, params: dict) -> dict[str, FloatWithSystem]:
-        if self.job_type != "pid":
-            return {k: FloatWithSystem(v) for k, v in params.items()}
-        return _resolve_block_parameters(
-            params, {**self.continuous_pids, **self.discrete_pids}
-        )
 
 
 def _options_pop(options, key: str):
@@ -620,6 +624,7 @@ def jobs_router(
     pid_gains_init: Optional[tuple[float, float, float]] = None,
     print_every=100,
     metrics_writer=None,
+    sim_options=None,
 ) -> tuple[dict[str, FloatWithSystem], dict[str, Any]]:
     """
     Args:
@@ -704,6 +709,7 @@ def jobs_router(
             that depend on each algorithm. Not all algorithms support such outputs.
             The output is updated on-the-fly and can be used to visualize progress.
     """
+
     # TODO: Extend this feature for other jobs too
     if algorithm in DOESNT_SUPPORT_BOUNDS_NATIVELY and job_type == "pid":
         warnings.warn(
@@ -732,6 +738,7 @@ def jobs_router(
         pid_blocks=pid_blocks,
         pid_gains_init=pid_gains_init,
         algorithm=algorithm,
+        sim_options=sim_options,
     )
 
     learning_rate = _options_pop(options, "learning_rate")
@@ -770,6 +777,7 @@ def jobs_router(
                 pid_blocks=pid_blocks,
                 pid_gains_init=pid_gains_init,
                 algorithm=algorithm,
+                sim_options=sim_options,
             )
             optim = OptaxWithStochasticVars(
                 optimizable=opt_model,
@@ -833,10 +841,31 @@ def jobs_router(
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}")
 
-    optimal_parameters = optim.optimize()
+    try:
+        optimal_parameters = optim.optimize()
+    except CallbackIsNotDifferentiableError as e:
+        node = {n.system_id: n for n in diagram.leaf_systems}.get(e.system_id)
+        if isinstance(node, CustomPythonBlock):
+            logger.error(
+                "The %s block is not differentiable. Try enabling "
+                '"Accelerate with JAX" in the block settings.',
+                node.name,
+            )
+        raise
 
     # Converts optimal parameters to FloatWithSystem objects (behave like regular
     # floats), and enrich them with block/system metadata.
-    optimal_parameters = opt_model.resolve_block_parameters(optimal_parameters)
+    if job_type == "design":
+        optimal_parameters = {
+            k: FloatWithSystem(v) for k, v in optimal_parameters.items()
+        }
+    elif job_type == "pid":
+        optimal_parameters = _resolve_pid_block_parameters(
+            optimal_parameters, {**opt_model.continuous_pids, **opt_model.discrete_pids}
+        )
+    elif job_type == "estimation":
+        optimal_parameters = {
+            k: FloatWithSystem(v, system=diagram) for k, v in optimal_parameters.items()
+        }
 
     return optimal_parameters, optim.metrics

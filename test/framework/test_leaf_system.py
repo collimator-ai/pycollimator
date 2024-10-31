@@ -164,5 +164,6 @@ class TestScalarLinear:
         model.input_ports[0].fix_value(u0)
 
         # Expect to find one feedthrough pairs: input[0] -> output[2]
+        model.create_dependency_graph()
         feedthrough_pairs = model.get_feedthrough()
         assert feedthrough_pairs == [(0, 2)]

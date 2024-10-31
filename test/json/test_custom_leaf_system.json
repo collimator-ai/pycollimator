@@ -1,0 +1,139 @@
+{
+    "$schema_version": "0.1",
+    "uuid": "c4592782-9905-4735-a712-1c825ba1a0be",
+    "name": "custom leaf",
+    "diagram": {
+      "nodes": [
+        {
+          "uuid": "941d2a17-1e0d-47c3-9385-aba206c99560",
+          "name": "Clock_0",
+          "type": "core.Clock",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "out_0",
+              "kind": "static"
+            }
+          ],
+          "parameters": {},
+          "time_mode": "agnostic",
+          "uiprops": {
+            "x": 512,
+            "y": 432,
+            "port_alignment": "spaced"
+          }
+        },
+        {
+          "uuid": "085d5d25-ade4-48e1-a6ff-b0bd967b486f",
+          "name": "CustomLeafSystem_0",
+          "type": "core.CustomLeafSystem",
+          "inputs": [
+            {
+              "name": "in_0",
+              "kind": "static"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "out_0",
+              "kind": "static"
+            }
+          ],
+          "parameters": {
+            "inline": {
+              "value": "true"
+            },
+            "class_name": {
+              "value": "MySystem",
+              "is_string": true
+            },
+            "source_code": {
+              "value": "from collimator import LeafSystem, parameters, ports\nfrom collimator.logging import logger\n\ndef _callback(time, state, u, dyn_param):\n    logger.info(\"hello world\")\n    return u\n\n@ports(inputs=[\"in_0\"], outputs=1)\n@parameters(dynamic=[\"dyn_param\"], static=[\"static_param\"])\nclass MySystem(LeafSystem):\n    \n    def __init__(self, dyn_param, static_param, *args, **kwargs):\n        super().__init__(*args, **kwargs)\n\n    def initialize(self, dyn_param, static_param):\n        \n        self.configure_output_port(\n            0,\n            _callback,\n            prerequisites_of_calc=[self.input_ports[0].ticket],\n            requires_inputs=True,\n        )",
+              "is_string": true
+            },
+            "dyn_param": {
+              "value": "0"
+            },
+            "static_param": {
+              "value": "0"
+            }
+          },
+          "time_mode": "agnostic",
+          "uiprops": {
+            "x": 672,
+            "y": 432,
+            "port_alignment": "spaced"
+          }
+        }
+      ],
+      "links": [
+        {
+          "uuid": "2f74b391-fb10-4375-b2a5-0dbc30b2f392",
+          "src": {
+            "node": "941d2a17-1e0d-47c3-9385-aba206c99560",
+            "port": 0,
+            "port_side": "outputs"
+          },
+          "dst": {
+            "node": "085d5d25-ade4-48e1-a6ff-b0bd967b486f",
+            "port": 0,
+            "port_side": "inputs"
+          },
+          "uiprops": {
+            "link_type": {
+              "connection_method": "direct_to_block"
+            },
+            "segments": [],
+            "hang_coord_start": {
+              "x": 584,
+              "y": 464
+            }
+          }
+        }
+      ],
+      "annotations": [],
+      "uuid": "f5bb91c3-1eb3-487a-b55b-e7c613687928"
+    },
+    "configuration": {
+      "fixed_results_interval": 0,
+      "numerical_backend": "jax",
+      "record_mode": "all",
+      "sample_time": 0.1,
+      "sim_output_mode": "auto",
+      "solver": {
+        "absolute_tolerance": 0.000001,
+        "max_checkpoints": 16,
+        "max_minor_steps_per_major_step": 4096,
+        "max_step": 1000000,
+        "method": "auto",
+        "min_step": 0,
+        "relative_tolerance": 0.001
+      },
+      "start_time": 0,
+      "stop_time": 10,
+      "worker_type": "any",
+      "workspace": {},
+      "data_points_min": 0,
+      "events_handling": "normal",
+      "continuous_time_result_interval": 0,
+      "__developer_options": {
+        "disable_firejail": false
+      }
+    },
+    "parameters": {
+      "g": {
+        "value": "0"
+      }
+    },
+    "submodels": {
+      "diagrams": {},
+      "references": {}
+    },
+    "state_machines": {},
+    "needs_autolayout": false,
+    "created_at": "2024-08-20T07:25:56Z",
+    "updated_at": "2024-08-21T05:44:26Z",
+    "version": 360,
+    "project_uuid": "6e5ac962-8f6b-4cb5-9d02-0ee0537680ba",
+    "kind": "Model"
+  }

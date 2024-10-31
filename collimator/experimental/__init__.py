@@ -15,8 +15,9 @@ from collimator.experimental.acausal.component_library import (
     rotational,
     translational,
     thermal,
-    fluid_i,
+    fluid,
     fluid_media,
+    hydraulic,
 )
 from collimator.experimental.acausal import (
     AcausalCompiler,
@@ -32,8 +33,9 @@ __all__ = [
     "rotational",
     "translational",
     "thermal",
-    "fluid_i",
+    "fluid",
     "fluid_media",
+    "hydraulic",
     "AcausalCompiler",
     "AcausalDiagram",
     "AcausalSystem",

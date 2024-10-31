@@ -101,8 +101,9 @@ nav:
       - tutorials/index.md
       - Getting started: tutorials/01-getting-started.ipynb
       - Custom blocks: tutorials/02-creating-custom-blocks.ipynb
-      - Wrappers: tutorials/03-wrappers.ipynb
-      - Optimization: tutorials/04-automatic-differentiation-optimization.ipynb
+      - Custom Acausal Components: tutorials/03-creating-custom-acausal-components.ipynb
+      - Wrappers: tutorials/04-wrappers.ipynb
+      - Optimization: tutorials/05-automatic-differentiation-optimization.ipynb
   - Examples:
       - examples/index.md
       - Introductory:
@@ -117,6 +118,7 @@ nav:
           - Trajectory optimization: examples/trajectory_optimization_and_stabilization.ipynb
           - Robotic Arm Control: examples/mujoco/pick_and_place.ipynb
           - PID tuning: examples/pid_tuning.ipynb
+          - PID tuning with constraints: examples/pid_autotuning_interactive.ipynb
           - Limit cycles: examples/limit_cycles.ipynb
           - Kalman Filters: examples/state_estimation_with_Kalman_filters.ipynb
           - UDEs and SR: examples/ude_and_sr_lotka_volterra.ipynb

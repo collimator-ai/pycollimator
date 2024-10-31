@@ -10,8 +10,10 @@
 # Affero General Public License along with this program. If not, see
 # <https://www.gnu.org/licenses/>.
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from collimator.lazy_loader import LazyLoader
+import warnings
 
 from .base import SymKind, EqnKind
 from .component_base import ComponentBase
@@ -21,61 +23,68 @@ if TYPE_CHECKING:
 else:
     sp = LazyLoader("sp", globals(), "sympy")
 """
-'fluid_i' stands for 'fluid incompressible', e.g. water, hydraulic fluid, etc. when operating
-under conditions where their compressibility can be neglected.
+Hydraulic domain is for isothermal incompressible fluid models, e.g. water, hydraulic fluid, etc. when operating
+under conditions where their compressibility and temperature changes can be neglected.
 
-The concepts are heavily based on these sources:
-Modelica Fluids library
-https://doc.modelica.org/Modelica%204.0.0/Resources/helpDymola/Modelica_Fluid.html#Modelica.Fluid
+Although this oversimplifies fluid system dynamics, certain use cases can still gain value from this simplified
+domain, and hence avoid unecessary complexity of more general fluid system modeling domains.
 
-Modelica Stream connectors concepts:
-https://doc.modelica.org/Modelica%204.0.0/Resources/Documentation/Fluid/Stream-Connectors-Overview-Rationale.pdf
-
-This implementation omits the stream connector/variables presently.
-
-Defining the properties of the fluid in the components is achieved using the FluidProperties component.
-FluidProperties has one acausal port. this port is connected anywhere in the network of components that
-all share the same fluid. In this way, it is possible to to have a single AcausalDiagram, but with several
-fluid networks, each having different fluid properties. The DiagramProcessing class handles appropriately
-assigning the fluid properties from the FluidProperties component to the ports of the components connected
-to the network.
-
-Incomporessible Fluid Domain variables:
+Domain variables:
 flow:Units = massflow:kg/s
 potential:Units = pressure:Pa
 """
 
 
-class FluidOnePort(ComponentBase):
-    """Partial component class for an fluid component with only
+@dataclass
+class Water:
+    name = "water"
+    density = 1000  # kg/m**3
+    viscosity_dyn = 0.89e3  # Pa*s
+    viscosity_kin = viscosity_dyn / density  # m^2/s
+    syms = None
+
+
+@dataclass
+class HydraulicFluid:
+    name = "hydraulic_fluid"
+    density = 950  # kg/m**3
+    viscosity_kin = 40e-6  # m^2/s
+    viscosity_dyn = viscosity_kin * density  # Pa*s
+    syms = None
+
+
+class HydraulicOnePort(ComponentBase):
+    """Partial component class for an hydraulic component with only
     one port.
     """
 
     def __init__(self, ev, name, P_ic=None, P_ic_fixed=False, p="port"):
         super().__init__()
-        self.P, self.M = self.declare_fluid_port(
+        self.P, self.M = self.declare_hydraulic_port(
             ev, p, P_ic=P_ic, P_ic_fixed=P_ic_fixed
         )
         self.port_idx_to_name = {-1: p}
+        self.declare_fluid_port_set(set(p))
 
 
-class FluidTwoPort(ComponentBase):
-    """Partial component class for an fluid component with
+class HydraulicTwoPort(ComponentBase):
+    """Partial component class for an hydraulic component with
     two ports.
     """
 
     def __init__(self, ev, name, p1="port_a", p2="port_b"):
         super().__init__()
-        self.P1, self.M1 = self.declare_fluid_port(ev, p1)
-        self.P2, self.M2 = self.declare_fluid_port(ev, p2)
+        self.P1, self.M1 = self.declare_hydraulic_port(ev, p1)
+        self.P2, self.M2 = self.declare_hydraulic_port(ev, p2)
         self.dP = self.declare_symbol(ev, "dP", name, kind=SymKind.var)
         self.add_eqs([sp.Eq(self.dP.s, self.P1.s - self.P2.s)])
         self.port_idx_to_name = {-1: p1, 1: p2}
+        self.declare_fluid_port_set(set([p1, p2]))
 
 
-class Accumulator(FluidOnePort):
+class Accumulator(HydraulicOnePort):
     """
-    Accumulator in the incompressible fluid domain. Pressure increases when mass flows in, and vice versa.
+    Accumulator in the hydarulic domain. Pressure increases when mass flows in, and vice versa.
     The relationship between internal pressure and mass flow is spring law. (ideal gass law coming soon)
     There is no restrictor at the port, no pressure loss a function of flow rate.
 
@@ -103,15 +112,20 @@ class Accumulator(FluidOnePort):
         self,
         ev,
         name=None,
-        P_ic=0.0,
-        P_ic_fixed=False,
+        initial_pressure=0.0,
+        initial_pressure_fixed=False,
         area=1.0,
         k=1.0,
     ):
         self.name = self.__class__.__name__ if name is None else name
 
-        super().__init__(ev, self.name, P_ic=P_ic, P_ic_fixed=P_ic_fixed)
-        V_ic = P_ic * area * area / k
+        super().__init__(
+            ev,
+            self.name,
+            P_ic=initial_pressure,
+            P_ic_fixed=initial_pressure_fixed,
+        )
+        V_ic = initial_pressure * area * area / k
         area = self.declare_symbol(
             ev,
             "area",
@@ -145,55 +159,47 @@ class Accumulator(FluidOnePort):
             ]
         )
 
-    def finalize(self):
+    def finalize(self, ev):
         # volume-massflow relationship.
         # this happens here because the port fluid properties are not yet assigned
         # at the time __init__ is called.
         fluid = self.ports["port"].fluid
-        self.add_eqs([sp.Eq(self.dV.s, self.M.s / fluid.density.s)])
+        self.add_eqs([sp.Eq(self.dV.s, self.M.s / fluid.density)])
 
 
-class FluidProperties(ComponentBase):
-    """Component for assigning a Fluid to a set of components by connecting
-    the FluidProperties component to the network via its 'prop' port.
+class HydraulicActuatorLinear(HydraulicTwoPort):
     """
-
-    def __init__(self, ev, fluid, name="FluidProperties"):
-        super().__init__()
-        self.name = name
-        # this may not be strictly necessary, but defining the port like this
-        # means thta all ports of all components conform to the same data, so
-        # the same validation check can be used everywhere.
-        P, M = self.declare_fluid_port(ev, "prop")
-        self.add_eqs([sp.Eq(0, M.s)])
-        self.fluid = fluid
-        self.port_idx_to_name = {-1: "prop"}
-
-
-class HydraulicActuatorLinear(FluidTwoPort):
-    """
-    Converters pressure to force, and mass_flow to translational motion.
+    Converts pressure to force, and mass_flow to translational motion.
     Component has 2 mechanical connections like a spring, flange_a and flange_b.
-    Components has 2 fluid connections, like a hydraulic actuator, port_a, and port_b.
+    Components has 2 hydraulic connections, like a hydraulic actuator, port_a, and port_b.
     dP=P1-P2
     dF=F1-F2
     Assuming all Ps and Fs are >0, when dP*area>pF, p1 and p2 get further apart, and vice versa.
     I'm not sure they have to all be positive for that to hold, but I know when they are, it does.
     """
 
-    def __init__(self, ev, name=None, area=1.0, x_ic=0.0, x_ic_fixed=False):
+    def __init__(
+        self,
+        ev,
+        name=None,
+        area=1.0,
+        initial_position_B=0.0,
+        initial_position_B_fixed=False,
+    ):
         self.name = self.__class__.__name__ if name is None else name
+        port_a, port_b, flange_a, flange_b = "port_a", "port_b", "flange_a", "flange_b"
         super().__init__(ev, self.name)
-        f1, x1, v1, a1 = self.declare_translational_port(ev, "flange_a")
+        f1, x1, v1, a1 = self.declare_translational_port(ev, flange_a)
         f2, x2, v2, a2 = self.declare_translational_port(
             ev,
-            "flange_b",
-            x_ic=x_ic,
-            x_ic_fixed=x_ic_fixed,
+            flange_b,
+            x_ic=initial_position_B,
+            x_ic_fixed=initial_position_B_fixed,
         )
+        self.port_idx_to_name = {-1: port_a, -2: port_b, 1: flange_a, 2: flange_b}
         self.add_eqs([sp.Eq(0, f1.s + f2.s)])
 
-        V_ic = x_ic * area
+        V_ic = initial_position_B * area
         V = self.declare_symbol(ev, "V", self.name, kind=SymKind.var, ic=V_ic)
         area = self.declare_symbol(
             ev,
@@ -223,20 +229,51 @@ class HydraulicActuatorLinear(FluidTwoPort):
             ]
         )
 
-    def finalize(self):
+    def finalize(self, ev):
         # velocity<->mass_flow relationships
         # the 'tracked' volume of fluid in the actuator increases when M1 is positive
         fluid = self.ports["port_a"].fluid
         self.add_eqs(
             [
-                sp.Eq(self.dV.s, self.M1.s / fluid.density.s),
+                sp.Eq(self.dV.s, self.M1.s / fluid.density),
             ]
         )
 
 
-class MassflowSensor(FluidTwoPort):
+class HydraulicProperties(ComponentBase):
+    """Component for assigning a Fluid to a set of components by connecting
+    the HydraulicProperties component to the network via its 'prop' port.
+    """
+
+    def __init__(self, ev, name="HydraulicProperties", fluid_name=None):
+        super().__init__()
+        self.name = name
+        # this may not be strictly necessary, but defining the port like this
+        # means that all ports of all components conform to the same data, so
+        # the same validation check can be used everywhere.
+        P, M = self.declare_hydraulic_port(ev, "prop")
+        self.add_eqs([sp.Eq(0, M.s)])
+        self.port_idx_to_name = {1: "prop"}
+        if fluid_name is not None:
+            if fluid_name.lower() not in ["water", "hydraulicfluid"]:
+                warnings.warn(
+                    f"HydraulicProperties block {self.name}. {fluid_name=} property not recognized. Default to Water."
+                )
+                self.fluid = Water()
+            elif fluid_name.lower() == "water":
+                self.fluid = Water()
+            else:
+                self.fluid = HydraulicFluid()
+        else:
+            warnings.warn(
+                f"HydraulicProperties block {self.name}. No fluid defined. Default to Water."
+            )
+            self.fluid = Water()
+
+
+class MassflowSensor(HydraulicTwoPort):
     """.
-    Ideal massflow sensor in the incompressible fluid domain.
+    Ideal massflow sensor in the hydraulic domain.
     """
 
     def __init__(
@@ -258,36 +295,40 @@ class MassflowSensor(FluidTwoPort):
         )
 
 
-class MassflowSource(FluidOnePort):
+class MassflowSource(HydraulicOnePort):
     """
-    Ideal massflow source in the incompressible fluid domain.
+    Ideal massflow source in the hydraulic domain.
     """
 
     def __init__(self, ev, name=None, M=1.0, enable_massflow_port=False):
-        raise NotImplementedError("Fluid MassflowSource not implemented.")
+        raise NotImplementedError("Hydraulic MassflowSource not implemented.")
 
 
-class Pipe(FluidTwoPort):
+class Pipe(HydraulicTwoPort):
     """
-    Simple pipe in the incompressible fluid domain.The characteristic equation is:
+    Simple pipe in the hydraulic domain.The characteristic equation is:
     P1(t) - P2(t) = massflow(t)*R.
 
     This is obviously overly simplified, but an acceptable starting point.
     """
 
-    def __init__(self, ev, name=None, R=1.0):
+    def __init__(self, ev, name=None, R=1.0, enable_resistance_port=False):
         self.name = self.__class__.__name__ if name is None else name
         super().__init__(ev, self.name)
 
-        R = self.declare_symbol(
-            ev,
-            "R",
-            self.name,
-            kind=SymKind.param,
-            val=R,
-            validator=lambda R: R > 0.0,
-            invalid_msg=f"Component {self.__class__.__name__} {self.name} must have R>0",
-        )
+        if enable_resistance_port:
+            R = self.declare_symbol(ev, "R", self.name, kind=SymKind.inp)
+        else:
+            R = self.declare_symbol(
+                ev,
+                "R",
+                self.name,
+                kind=SymKind.param,
+                val=R,
+                validator=lambda R: R > 0.0,
+                invalid_msg=f"Component {self.__class__.__name__} {self.name} must have R>0",
+            )
+
         self.add_eqs(
             [
                 # does not store mass
@@ -300,7 +341,7 @@ class Pipe(FluidTwoPort):
 
 class PressureSensor(ComponentBase):
     """
-    Ideal pressure sensor in the incompressible fluid domain.
+    Ideal pressure sensor in the hydraulic domain.
     When port_b enabled, measures between port_a and port_b.
     When port_b disbaled, measures the absolute pressure.
     """
@@ -313,13 +354,18 @@ class PressureSensor(ComponentBase):
     ):
         self.name = self.__class__.__name__ if name is None else name
         super().__init__()
-        P1, M1 = self.declare_fluid_port(ev, "port_a")
-        self.port_idx_to_name = {-1: "port_a"}
+        port1 = "port_a"
+        P1, M1 = self.declare_hydraulic_port(ev, port1)
+        self.port_idx_to_name = {-1: port1}
+        fluid_port_set = [port1]
         if enable_port_b:
-            P2, M2 = self.declare_fluid_port(ev, "port_b")
-            self.port_idx_to_name = {1: "port_b"}
+            port2 = "port_b"
+            P2, M2 = self.declare_hydraulic_port(ev, port2)
+            self.port_idx_to_name[1] = port2
+            fluid_port_set.append(port2)
+        self.declare_fluid_port_set(fluid_port_set)
 
-        p = self.declare_symbol(ev, "p", self.name, kind=SymKind.outp)
+        p = self.declare_symbol(ev, "P_rel", self.name, kind=SymKind.outp)
 
         if enable_port_b:
             self.declare_equation(sp.Eq(p.s, P1.s - P2.s), kind=EqnKind.outp)
@@ -329,9 +375,9 @@ class PressureSensor(ComponentBase):
             self.add_eqs([sp.Eq(M1.s, 0)])
 
 
-class PressureSource(FluidOnePort):
+class PressureSource(HydraulicOnePort):
     """
-    Ideal pressure source in the incompressible fluid domain.
+    Ideal pressure source in the hydraulic domain.
 
     Args:
         pressure (number):
@@ -358,13 +404,13 @@ class PressureSource(FluidOnePort):
         self.add_eqs([sp.Eq(self.P.s, pressure.s)])  # pressure source equality
 
 
-class Pump(FluidTwoPort):
+class Pump(HydraulicTwoPort):
     """
-    Ideal pump in the incompressible fluid domain.
+    Ideal pump in the hydraulic domain.
 
     The pump has a maximum pressure differential, dP_max, which it can produce.
     Therefore, the max outlet pressure is dP_max - P_in.
-    The pump has some input power, pwr, which is a causal input signal,
+    The pump has some input power, 'power', which is a causal input signal,
     that represents the external work done by the pump on the fluid
     system.
     The pump has some performance coefficient that converts dP*pwr to massflow,
@@ -409,7 +455,7 @@ class Pump(FluidTwoPort):
             validator=lambda CoP: CoP > 0.0,
             invalid_msg=f"Component {self.__class__.__name__} {self.name} must have CoP>0",
         )
-        pwr = self.declare_symbol(ev, "pwr", self.name, kind=SymKind.inp)
+        pwr = self.declare_symbol(ev, "power", self.name, kind=SymKind.inp)
         self.add_eqs(
             [
                 # does not store mass

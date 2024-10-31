@@ -12,7 +12,6 @@
 
 from typing import TYPE_CHECKING
 from collimator.lazy_loader import LazyLoader
-
 from .base import SymKind, EqnKind
 from .component_base import ComponentBase
 import warnings
@@ -99,56 +98,6 @@ class RotationalTwoPort(ComponentBase):
         self.port_idx_to_name = {-1: p1, 1: p2}
 
 
-class BasicEngine(RotationalOnePort):
-    """
-    Internal Combustion Engine modeled as a torque source.
-    The produced toqrue is a function of the 'throttle' input,
-    and the peak toqrue curve, which is a lookup table as a function
-    of speed.
-
-    Phenomena neglected are listed below, maybe these will be aded in the future.
-    - idling
-    - inertia
-    - friction
-    - fuel consumption
-    - pumping losses
-    - heat rejection
-
-    Args:
-        peak_trq_w: list(float):
-            peak toqrue curve speed break points
-        peak_trq_t: list(float):
-            peak toqrue curve torque data points
-
-    """
-
-    def __init__(
-        self,
-        ev,
-        name=None,
-        peak_trq_w=[0.0, 99, 100, 500, 600],
-        peak_trq_t=[0.0, 0.0, 100, 100, 0.0],
-    ):
-        self.name = self.__class__.__name__ if name is None else name
-        super().__init__(ev, self.name)
-
-        thr = self.declare_symbol(ev, "thr", self.name, kind=SymKind.inp)
-
-        # create component specific lookup table function symbols
-        peak_trq_lut = self.declare_1D_lookup_table(
-            ev,
-            self.w.s,
-            "peak_trq_w",
-            peak_trq_w,
-            "peak_trq_t",
-            peak_trq_t,
-            lut_name="peak_trq_f",
-        )
-        # negative in front of t.s because the RHS is torque going out
-        # of the component.
-        self.add_eqs([sp.Eq(-self.t.s, thr.s * peak_trq_lut.s)])
-
-
 class Damper(RotationalTwoPort):
     """
     Ideal damper in rotational domain. The characteristic equation is:
@@ -205,6 +154,56 @@ class Damper(RotationalTwoPort):
             invalid_msg=f"Component {self.__class__.__name__} {self.name} must have D>0",
         )
         self.add_eqs([sp.Eq(self.t1.s, d.s * (self.w1.s - self.w2.s))])
+
+
+class Engine(RotationalOnePort):
+    """
+    Internal Combustion Engine modeled as a torque source.
+    The produced toqrue is a function of the 'throttle' input,
+    and the peak toqrue curve, which is a lookup table as a function
+    of speed.
+
+    Phenomena neglected are listed below, maybe these will be aded in the future.
+    - idling
+    - inertia
+    - friction
+    - fuel consumption
+    - pumping losses
+    - heat rejection
+
+    Args:
+        peak_trq_w: list(float):
+            peak toqrue curve speed break points
+        peak_trq_t: list(float):
+            peak toqrue curve torque data points
+
+    """
+
+    def __init__(
+        self,
+        ev,
+        name=None,
+        peak_trq_w=[0.0, 99, 100, 500, 600],
+        peak_trq_t=[0.0, 0.0, 100, 100, 0.0],
+    ):
+        self.name = self.__class__.__name__ if name is None else name
+        super().__init__(ev, self.name)
+
+        thr = self.declare_symbol(ev, "thr", self.name, kind=SymKind.inp)
+
+        # create component specific lookup table function symbols
+        peak_trq_lut = self.declare_1D_lookup_table(
+            ev,
+            self.w.s,
+            "peak_trq_w",
+            peak_trq_w,
+            "peak_trq_t",
+            peak_trq_t,
+            lut_name="peak_trq_f",
+        )
+        # negative in front of t.s because the RHS is torque going out
+        # of the component.
+        self.add_eqs([sp.Eq(-self.t.s, thr.s * peak_trq_lut.s)])
 
 
 class FixedAngle(RotationalOnePort):
@@ -330,6 +329,7 @@ class Friction(RotationalTwoPort):
 class Gear(RotationalTwoPort):
     """
     Gear ratio with efficiency map based on speed and torque.
+    Can have no efficiency if eff related params are None.
     The characteristic equations are:
     w1(t) = r * w2(t)
     eff(t) = LUT2D(t1(t),w1(t))
@@ -351,9 +351,9 @@ class Gear(RotationalTwoPort):
         ev,
         name=None,
         r=1.0,
-        spd_pts=[-1e6, 1e6],
-        trq_pts=[-1e6, 1e6],
-        eff=[[0.98, 0.98], [0.98, 0.98]],
+        spd_pts=None,
+        trq_pts=None,
+        eff=None,
     ):
         self.name = self.__class__.__name__ if name is None else name
         # NOTE: 'include_torque_equality=False' because 0=t1+t1 is not valid for a gear.
@@ -368,63 +368,47 @@ class Gear(RotationalTwoPort):
             validator=lambda r: r > 0.0,
             invalid_msg=f"Component {self.__class__.__name__} {self.name} must have r>0",
         )
-        eff = self.declare_2D_lookup_table(
-            ev,
-            self.w1.s,
-            "spd_pts",
-            spd_pts,
-            self.t1.s,
-            "trq_pts",
-            trq_pts,
-            "eff_pts",
-            eff,
-            "eff_map",
-        )
-        pwr1 = self.declare_symbol(ev, "pwr1", self.name, kind=SymKind.var)
-        trq_expr = self.declare_conditional(
-            ev,
-            pwr1.s >= 0,  # if
-            r.s * self.t1.s * eff.s + self.t2.s,  # then
-            r.s * self.t1.s / eff.s + self.t2.s,  # else
-        )
-        self.add_eqs(
-            [
-                sp.Eq(self.w1.s, r.s * self.w2.s),
-                sp.Eq(pwr1.s, self.w1.s * self.t1.s),
-                sp.Eq(0, trq_expr.s),
-            ]
-        )
-
-
-class IdealGear(RotationalTwoPort):
-    """
-    Ideal gear ratio. The characteristic equations are:
-    w1(t) = r * w2(t)
-    0 = r * t1(t) + t2(t)
-
-    Note: for r>1.0, IdealGear is a 'reducer'.
-    """
-
-    def __init__(self, ev, name=None, r=1.0):
-        self.name = self.__class__.__name__ if name is None else name
-        # NOTE: 'include_torque_equality=False' because 0=t1+t1 is not valid for a gear.
-        super().__init__(ev, self.name, include_torque_equality=False)
-
-        r = self.declare_symbol(
-            ev,
-            "r",
-            self.name,
-            kind=SymKind.param,
-            val=r,
-            validator=lambda r: r > 0.0,
-            invalid_msg=f"Component {self.__class__.__name__} {self.name} must have r>0",
-        )
-        self.add_eqs(
-            [
-                sp.Eq(self.w1.s, r.s * self.w2.s),
-                sp.Eq(0, r.s * self.t1.s + self.t2.s),
-            ]
-        )
+        eff_params = [spd_pts, trq_pts, eff]
+        if all(eff_params):
+            eff = self.declare_2D_lookup_table(
+                ev,
+                self.w1.s,
+                "spd_pts",
+                spd_pts,
+                self.t1.s,
+                "trq_pts",
+                trq_pts,
+                "eff_pts",
+                eff,
+                "eff_map",
+            )
+            pwr1 = self.declare_symbol(ev, "pwr1", self.name, kind=SymKind.var)
+            trq_expr = self.declare_conditional(
+                ev,
+                pwr1.s >= 0,  # if
+                r.s * self.t1.s * eff.s + self.t2.s,  # then
+                r.s * self.t1.s / eff.s + self.t2.s,  # else
+                cond_name="trq_expr",
+                non_bool_zc_expr=pwr1.s,
+            )
+            self.add_eqs(
+                [
+                    sp.Eq(self.w1.s, r.s * self.w2.s),
+                    sp.Eq(pwr1.s, self.w1.s * self.t1.s),
+                    sp.Eq(0, trq_expr.s),
+                ]
+            )
+        else:
+            if any(eff_params):
+                warnings.warn(
+                    f"Component {self.__class__.__name__} {self.name} ignoring efficiency parameters because not all are defiend."
+                )
+            self.add_eqs(
+                [
+                    sp.Eq(self.w1.s, r.s * self.w2.s),
+                    sp.Eq(0, r.s * self.t1.s + self.t2.s),
+                ]
+            )
 
 
 class IdealPlanetary(ComponentBase):

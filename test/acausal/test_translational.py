@@ -24,8 +24,10 @@ import collimator
 from collimator import library as lib
 
 import collimator.logging as logging
+from collimator.testing.markers import skip_if_not_jax
 
 logging.set_log_level(logging.DEBUG)
+skip_if_not_jax()
 
 
 @pytest.mark.parametrize("fixed_ic", [0.0, -1.0])
@@ -128,29 +130,49 @@ def test_mech_oscillator(fixed_ic, show_plot=False):
         ax1.plot(t, frc, label="frc")
         ax1.grid()
         ax1.legend()
-        ax2.plot(t, frc_sol - frc)
+        ax2.plot(t, frc_sol - frc, label="frc error")
         ax2.grid()
+        ax2.legend()
 
         ax3.plot(t, spd_sol, label="spd_sol")
         ax3.plot(t, spd, label="spd")
         ax3.grid()
         ax3.legend()
-        ax4.plot(t, spd_sol - spd)
+        ax4.plot(t, spd_sol - spd, label="spd error")
         ax4.grid()
+        ax4.legend()
 
         ax5.plot(t, pos_sol, label="pos_sol")
         ax5.plot(t, pos, label="pos")
         ax5.grid()
         ax5.legend()
-        ax6.plot(t, pos_sol - pos)
+        ax6.plot(t, pos_sol - pos, label="pos error")
         ax6.grid()
+        ax6.legend()
 
         ax7.plot(t, acc_sol, label="acc_sol")
         ax7.plot(t, acc, label="acc")
         ax7.grid()
         ax7.legend()
-        ax8.plot(t, acc_sol - acc)
+        ax8.plot(t, acc_sol - acc, label="acc error")
         ax8.grid()
+        ax8.legend()
+
+        plt.show()
+
+        fig, (ax2, ax4, ax6, ax8) = plt.subplots(4, 1, figsize=(8, 8))
+        ax2.plot(t, frc_sol - frc, label="frc error")
+        ax2.grid()
+        ax2.legend()
+        ax4.plot(t, spd_sol - spd, label="spd error")
+        ax4.grid()
+        ax4.legend()
+        ax6.plot(t, pos_sol - pos, label="pos error")
+        ax6.grid()
+        ax6.legend()
+        ax8.plot(t, acc_sol - acc, label="acc error")
+        ax8.grid()
+        ax8.legend()
 
         plt.show()
 
@@ -563,11 +585,11 @@ def test_friction(show_plot=False, f_sinusoidal=False):
 if __name__ == "__main__":
     show_plot = True
     # test_mech_oscillator(0.0, show_plot=show_plot)
-    # test_mech_oscillator(-1.0, show_plot=show_plot)
+    test_mech_oscillator(-1.0, show_plot=show_plot)
     # test_mech_oscillator_with_outputs(show_plot=show_plot)
     # test_damped_mech_oscillators_with_Finput(show_plot=show_plot)
     # test_many_springs_and_masses(show_plot=show_plot)
-    test_friction(show_plot=show_plot, f_sinusoidal=True)
+    # test_friction(show_plot=show_plot, f_sinusoidal=True)
 
     # @am. ill come back to this later.
     # commented out to please ruff

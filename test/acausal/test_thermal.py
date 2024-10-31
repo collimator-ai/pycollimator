@@ -21,8 +21,10 @@ from collimator.experimental import thermal as ht
 import collimator
 from collimator import library as lib
 import collimator.logging as logging
+from collimator.testing.markers import skip_if_not_jax
 
 logging.set_log_level(logging.DEBUG)
+skip_if_not_jax()
 
 
 def test_basic_thermal(show_plot=False):
@@ -37,7 +39,7 @@ def test_basic_thermal(show_plot=False):
     ev = EqnEnv()
     ad = AcausalDiagram()
     t1 = ht.TemperatureSource(ev, name="t1", temperature=temperature)
-    r1 = ht.ThermalInsulator(ev, name="r1", R=1.0)
+    r1 = ht.Insulator(ev, name="r1", R=1.0)
     c1 = ht.HeatCapacitor(
         ev,
         name="c1",
@@ -48,7 +50,7 @@ def test_basic_thermal(show_plot=False):
     ad.connect(t1, "port", r1, "port_a")
     ad.connect(r1, "port_b", c1, "port")
     # compile to acausal system
-    ac = AcausalCompiler(ev, ad)
+    ac = AcausalCompiler(ev, ad, verbose=True)
     lpf = ac()
 
     # make wildcat diagram
@@ -107,7 +109,7 @@ def test_basic_thermal_with_IO(show_plot=False):
     #                               |-gr1-mass2-tempSensor2
     #                               |-gr2-mass3-tempSensor3
     thermal_mass_temp = 250
-    Gr_const = 0.01
+    Gr_const = 1e-3
 
     # make acausal diagram
     ev = EqnEnv()
@@ -120,9 +122,9 @@ def test_basic_thermal_with_IO(show_plot=False):
         initial_temperature=thermal_mass_temp,
         initial_temperature_fixed=True,
     )
-    r1 = ht.ThermalInsulator(ev, name="r1", enable_resistance_port=True)
-    gr1 = ht.ThermalRadiation(ev, name="gr1", enable_Gr_port=True)
-    gr2 = ht.ThermalRadiation(ev, name="gr2", enable_Gr_port=False, Gr=Gr_const)
+    r1 = ht.Insulator(ev, name="r1", enable_resistance_port=True)
+    gr1 = ht.Radiation(ev, name="gr1", enable_Gr_port=True)
+    gr2 = ht.Radiation(ev, name="gr2", enable_Gr_port=False, Gr=Gr_const)
     c1 = ht.HeatCapacitor(
         ev,
         name="c1",
@@ -164,7 +166,7 @@ def test_basic_thermal_with_IO(show_plot=False):
     ad2.connect(c3, "port", tmpsnsr3, "port_a")
 
     # compile to acausal system
-    ac2 = AcausalCompiler(ev, ad2)
+    ac2 = AcausalCompiler(ev, ad2, verbose=True)
     hs2 = ac2()
 
     # make wildcat diagram
@@ -213,19 +215,19 @@ def test_basic_thermal_with_IO(show_plot=False):
         fig, ax = plt.subplots(1, 1, figsize=(8, 3))
         ax.plot(t, t0, label="t0", marker="o")
         ax.plot(t, t1, label="t1")
-        ax.plot(t, t2, label="t2")
+        ax.plot(t, t2, label="t2", marker="x")
         ax.plot(t, t3, label="t3")
         ax.legend()
         ax.grid()
         plt.show()
 
-    assert np.abs(t0[-1] - 506.24999023046587) < 1e-4
-    assert np.abs(t1[-1] - 481.2500293095652) < 1e-4
-    assert np.abs(t2[-1] - 506.2499902299842) < 1e-4
-    assert np.abs(t3[-1] - 506.2499902299842) < 1e-4
+    assert np.abs(t0[-1] - 718.1233860789984) < 1e-4
+    assert np.abs(t1[-1] - 681.4016738456517) < 1e-4
+    assert np.abs(t2[-1] - 300.2374700376752) < 1e-4
+    assert np.abs(t3[-1] - 300.2374700376752) < 1e-4
 
 
 if __name__ == "__main__":
     show_plot = True
-    # test_basic_thermal(show_plot=show_plot)
-    test_basic_thermal_with_IO(show_plot=show_plot)
+    test_basic_thermal(show_plot=show_plot)
+    # test_basic_thermal_with_IO(show_plot=show_plot)

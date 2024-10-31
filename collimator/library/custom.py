@@ -17,13 +17,14 @@ from contextlib import redirect_stderr, redirect_stdout
 import functools
 from io import StringIO
 import logging
+import traceback
 import types
 from typing import TYPE_CHECKING, Any, List, Mapping
 
 import jax
 import jax.numpy as jnp
 
-from ..framework import LeafSystem, LeafState, parameters
+from ..framework import LeafSystem, LeafState, parameters as declare_parameters
 from ..logging import logdata, logger
 from ..framework.error import (
     BlockInitializationError,
@@ -32,7 +33,6 @@ from ..framework.error import (
     PythonScriptTimeNotSupportedError,
 )
 from ..backend import io_callback, jit, numpy_api as cnp
-
 
 if TYPE_CHECKING:
     from ..backend.typing import Array, DTypeLike
@@ -56,12 +56,12 @@ def _caused_by_nameerror(e):
 def _default_exec(
     code: str | types.CodeType,
     env: dict[str, Any],
-    logger: logging.Logger,
+    logger_: logging.Logger,
     inputs: dict[str, jax.Array] = None,
     return_vars: list[str] = None,
     return_dtypes: list[DTypeLike] = None,
     system: LeafSystem = None,
-    code_name: str = "step_code",
+    code_name: str = "step",
 ):
     """
     `env` is a mutable state this is required because the python script block
@@ -85,13 +85,24 @@ def _default_exec(
     stdout = stdout_buffer.getvalue()
     if stdout:
         stdout = stdout[:-1] if stdout[-1] == "\n" else stdout
-        logger.info(stdout, **logdata(block=system))
+        logger_.info(stdout, **logdata(block=system))
     stderr = strerr_buffer.getvalue()
     if stderr:
         stderr = stderr[:-1] if stderr[-1] == "\n" else stderr
-        logger.warning(stderr, **logdata(block=system))
+        logger_.warning(stderr, **logdata(block=system))
 
     if exception is not None:
+        # Print rich error logs when coming from the UI (determined by the presence of ui_id)
+        print_errors = system is not None and system.ui_id is not None
+        if print_errors:
+            errbuf = StringIO()
+            errbuf.write(f"{type(exception).__name__}: {exception}\n")
+            if exception.__traceback__:
+                lines = traceback.format_tb(exception.__traceback__)
+                # skipping first "line" (that looks like: "file custom.py, exec()...")
+                errbuf.write("".join(lines[1:]))
+            logger_.error(errbuf.getvalue().strip(), **logdata(block=system))
+
         name_error = _caused_by_nameerror(exception)
         if name_error and name_error.name == "time":
             raise PythonScriptTimeNotSupportedError(system=system) from exception
@@ -120,9 +131,16 @@ def _filter_non_traceable(globals_dict):
     can trace and another for "static" data that cannot be traced and will be stored
     as a block attribute (e.g. functions, classes, modules, etc).
     """
+
+    KNOWN_NON_TRACEABLE = ["__builtins__", "__main__"]
     dynamic_globals = {}
     static_globals = {}
+
     for key, value in globals_dict.items():
+        if key in KNOWN_NON_TRACEABLE or isinstance(value, types.ModuleType):
+            static_globals[key] = value
+            continue
+
         try:
             # Test pytree conversion but don't actually convert.  If the global was
             # declared like `x = [0, 1]` we don't want to convert this to
@@ -208,13 +226,17 @@ class CustomJaxBlock(LeafSystem):
         outputs (Mapping[str, Tuple[DTypeLike, ShapeLike]]): A dictionary mapping
             output variable names to a tuple of dtype and shape. The order of the
             output ports is the same as the order of the output variables.
-        parameters (Mapping[str, Array]): A dictionary mapping parameter names to
+        static_parameters (Mapping[str, Array]): A dictionary mapping parameter names to
             values. Parameters are treated as immutable and cannot be modified in
-            the step code. Parameters can be arrays or scalars, but must have static
+            the step code. Static parameters can't be used in ensemble simulations or
+            optimization workflows.
+        dynamic_parameters (Mapping[str, Array]): A dictionary mapping parameter names to
+            values. Parameters are treated as immutable and cannot be modified in
+            the step code. Dynamic parameters can be arrays or scalars, but must have static
             shapes and dtypes in order to support JIT compilation.
     """
 
-    @parameters(
+    @declare_parameters(
         static=[
             "dt",
             "init_script",
@@ -234,11 +256,14 @@ class CustomJaxBlock(LeafSystem):
         time_mode: str = "discrete",  # [discrete, agnostic]
         inputs: List[str] = None,  # [name]
         outputs: List[str] = None,
-        parameters: Mapping[str, Array] = None,
+        dynamic_parameters: Mapping[str, Array] = None,
+        static_parameters: Mapping[str, Array] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        parameters = parameters or {}
+
+        dynamic_parameters = dynamic_parameters if dynamic_parameters else {}
+        static_parameters = static_parameters if static_parameters else {}
 
         if time_mode not in ["discrete", "agnostic"]:
             raise BlockInitializationError(
@@ -260,15 +285,28 @@ class CustomJaxBlock(LeafSystem):
         self.dt = dt
 
         # Note: 'optimize' level could be lowered in debug mode
-        self.init_code = compile(
-            init_script, filename="<init>", mode="exec", optimize=2
-        )
-        self.step_code = compile(
-            user_statements, filename="<step>", mode="exec", optimize=2
-        )
+        try:
+            self.init_code = compile(
+                init_script, filename="<init>", mode="exec", optimize=2
+            )
+        except BaseException as e:
+            raise PythonScriptError(
+                f"Syntax error in init_script for PythonScript block '{self.name_path_str}': {e}",
+                system=self,
+            ) from e
+
+        try:
+            self.step_code = compile(
+                user_statements, filename="<step>", mode="exec", optimize=2
+            )
+        except BaseException as e:
+            raise PythonScriptError(
+                f"Syntax error in user_statements for PythonScript block '{self.name_path_str}': {e}",
+                system=self,
+            ) from e
 
         if finalize_script != "" and not isinstance(self, CustomPythonBlock):
-            raise BlockInitializationError(
+            raise PythonScriptError(
                 f"PythonScript block '{self.name_path_str}' has finalize_script "
                 "but this is not supported at the moment.",
                 system=self,
@@ -276,11 +314,14 @@ class CustomJaxBlock(LeafSystem):
             )
 
         # Declare parameters
-        for param_name, value in parameters.items():
+        for param_name, value in dynamic_parameters.items():
             if isinstance(value, list):
                 value = cnp.asarray(value)
             as_array = isinstance(value, cnp.ndarray) or cnp.isscalar(value)
             self.declare_dynamic_parameter(param_name, value, as_array=as_array)
+
+        for param_name, value in static_parameters.items():
+            self.declare_static_parameter(param_name, value)
 
         # Run the init_script
         persistent_env = self.exec_init()
@@ -394,7 +435,7 @@ class CustomJaxBlock(LeafSystem):
         # Declare output ports for each state variable
         for o_port_name in outputs:
             self.declare_output_port(
-                _make_callback(o_port_name),
+                jit(_make_callback(o_port_name)),
                 name=o_port_name,
                 requires_inputs=True,
             )
@@ -469,7 +510,22 @@ class CustomJaxBlock(LeafSystem):
         # is what allow the code to be executed as a module. 2] local since that is where
         # the new bindings will be written, that we need to retain since the code in step_code
         # may depend on these bindings.
-        exec(self.init_code, local_env, local_env)
+        try:
+            _default_exec(
+                self.init_code,
+                local_env,
+                logger_=logger,
+                system=self,
+                code_name="init",
+            )
+
+        except BaseException as e:
+            logger.error(
+                "PythonScript block '%s' init script failed",
+                self.name_path_str,
+                **logdata(block=self),
+            )
+            raise PythonScriptError(system=self) from e
 
         # persistent_env contains bindings for parameters and for values from init_script
         persistent_env, static_env = _filter_non_traceable(local_env)
@@ -500,10 +556,29 @@ class CustomJaxBlock(LeafSystem):
             **base_copy,
             **persistent_env,
             **input_env,
+            **parameters,
         }
 
         # Execute the step code in the local environment
-        exec(self.step_code, local_env, local_env)
+        try:
+            _default_exec(
+                self.step_code,
+                local_env,
+                logger_=logger,
+                inputs=input_env,
+                system=self,
+                code_name="step",
+            )
+
+        except PythonScriptError:
+            raise
+        except BaseException as e:
+            logger.error(
+                "PythonScript block '%s' step failed.",
+                self.name_path_str,
+                **logdata(block=self),
+            )
+            raise PythonScriptError(system=self) from e
 
         # Updated state variables are stored in the local environment
         xd = {name: local_env[name] for name in self.output_names}
@@ -529,12 +604,16 @@ class CustomJaxBlock(LeafSystem):
     ):
         """Test-compile the init and step code to check for errors."""
         try:
-            jit(self.wrap_callback(self.exec_step))(context)
+            # Note that exec_step doesn't use parameters or time
+            inputs = self.collect_inputs(context)
+            jit(self.exec_step)(None, context[self.system_id].state, *inputs)
         except BaseException as exc:
             with ErrorCollector.context(error_collector):
                 name_error = _caused_by_nameerror(exc)
                 if name_error and name_error.name == "time":
                     raise PythonScriptTimeNotSupportedError(system=self) from exc
+                if isinstance(exc, PythonScriptError):
+                    raise
                 raise PythonScriptError(system=self) from exc
 
 
@@ -568,11 +647,11 @@ class CustomPythonBlock(CustomJaxBlock):
         outputs: List[str] = None,
         accelerate_with_jax: bool = False,
         time_mode: str = "discrete",
-        parameters: Mapping[str, Array] = None,
+        static_parameters: Mapping[str, Array] = None,
         **kwargs,
     ):
         self._static_data_initialized = False
-        self._parameters = parameters or {}
+        self._parameters = static_parameters or {}
         self._persistent_env = {}
 
         # Will populate return type information during static initialization
@@ -588,7 +667,7 @@ class CustomPythonBlock(CustomJaxBlock):
             outputs=outputs,
             accelerate_with_jax=accelerate_with_jax,
             time_mode=time_mode,
-            parameters=self._parameters,
+            static_parameters=self._parameters,
             **kwargs,
         )
 
@@ -637,26 +716,28 @@ class CustomPythonBlock(CustomJaxBlock):
             CustomPythonBlock.__exec_fn,
             code=self.init_code,
             env=local_env,
-            logger=logger,
+            logger_=logger,
             system=self,
-            code_name="init_script",
+            code_name="init",
         )
 
         try:
             io_callback(exec_fn, None)
         except KeyboardInterrupt as e:
             logger.error(
-                "Python block '%s' init script execution was interrupted.", self.name
+                "Python block '%s' init script execution was interrupted.",
+                self.name,
+                **logdata(block=self),
             )
             raise PythonScriptError(
                 message="Python block init script execution was interrupted.",
                 system=self,
             ) from e
         except PythonScriptError as e:
-            logger.error("%s: exec_init failed.", self.name)
+            logger.error("%s: init script failed.", self.name, **logdata(block=self))
             raise e
         except BaseException as e:
-            logger.error("%s: exec_init failed.", self.name)
+            logger.error("%s: init script failed.", self.name, **logdata(block=self))
             raise PythonScriptError(system=self) from e
         self._persistent_env = local_env
 
@@ -664,6 +745,7 @@ class CustomPythonBlock(CustomJaxBlock):
 
     def exec_step(self, time, state, *inputs, **parameters):
         if not self._static_data_initialized:
+            # return_dtypes is inferred in initialize_static_data()
             raise PythonScriptError(
                 "Trying to execute step code before static data has been initialized",
                 system=self,
@@ -682,44 +764,52 @@ class CustomPythonBlock(CustomJaxBlock):
         local_env = {
             **base_copy,
             **self._persistent_env,
+            **parameters,
         }
 
         exec_fn = functools.partial(
             CustomPythonBlock.__exec_fn,
             code=self.step_code,
             env=local_env,
-            logger=logger,
+            logger_=logger,
             return_vars=self.output_names,
             return_dtypes=self.return_dtypes,
             system=self,
-            code_name="step_code",
+            code_name="step",
         )
 
-        try:
-            return_vars = io_callback(
-                exec_fn, self.result_shape_dtypes, inputs=input_env
-            )
-        except KeyboardInterrupt:
-            logger.error(
-                "Python block '%s' init script execution was interrupted.", self.name
-            )
-            raise
-        except NameError as e:
-            err_msg = (
-                f"Python block '{self.name}' step script execution failed with a NameError on"
-                + f" missing variable '{e.name}'."
-                + " All names used in this script should be declared in the init script."
-                + f" The execution environment contains the following names: {', '.join(list(local_env.keys()))}"
-            )
-            logger.error(err_msg)
-            logger.error("NameError: %s", e)
-            raise PythonScriptError(system=self) from e
-        except PythonScriptError as e:
-            logger.error("%s: exec_step failed.", self.name)
-            raise e
-        except BaseException as e:
-            logger.error("%s: exec_step failed.", self.name)
-            raise PythonScriptError(system=self) from e
+        def wrapped_exec_fn(inputs):
+            try:
+                return exec_fn(inputs=inputs)
+            except KeyboardInterrupt:
+                logger.error(
+                    "Python block '%s' step script execution was interrupted.",
+                    self.name,
+                    **logdata(block=self),
+                )
+                raise
+            except NameError as e:
+                err_msg = (
+                    f"Python block '{self.name}' step script execution failed with a NameError on"
+                    + f" missing variable '{e.name}'."
+                    + " All names used in this script should be declared in the init script."
+                    + f" The execution environment contains the following names: {', '.join(list(local_env.keys()))}"
+                )
+                logger.error(err_msg)
+                logger.error("NameError: %s", e, **logdata(block=self))
+                raise PythonScriptError(system=self) from e
+            except PythonScriptError as e:
+                logger.error("%s: exec_step failed.", self.name, **logdata(block=self))
+                raise e
+            except BaseException as e:
+                logger.error("%s: exec_step failed.", self.name, **logdata(block=self))
+                raise PythonScriptError(system=self) from e
+
+        return_vars = io_callback(
+            wrapped_exec_fn,
+            self.result_shape_dtypes,
+            inputs=input_env,
+        )
 
         # Keep local env for next step but only if defined in init_script
         # NOTE: If this restriction turns out to be counterproductive, we can
@@ -793,11 +883,11 @@ class CustomPythonBlock(CustomJaxBlock):
             CustomPythonBlock.__exec_fn,
             self.step_code,
             local_env,
-            logger,
+            logger_=logger,
             return_vars=self.output_names,
             return_dtypes=return_dtypes,
             system=self,
-            code_name="step_code",
+            code_name="step",
         )
 
         return_vars = exec_fn(inputs=input_env)

@@ -15,6 +15,8 @@ import numpy as np
 import collimator
 from collimator.library.quanser import QubeServoModel
 
+from collimator.testing.markers import requires_jax
+
 
 def test_qube_simulation(show_plots=False):
     system = QubeServoModel(x0=[0.0, 0.5, 0.0, 0.0])
@@ -43,6 +45,7 @@ def test_qube_simulation(show_plots=False):
         plt.show()
 
 
+@requires_jax(xfail=True)  # why no numpy?
 def test_qube_linearization():
     xd = np.array([0.0, 0.0, 0.0, 0.0])
     xu = np.array([0.0, np.pi, 0.0, 0.0])

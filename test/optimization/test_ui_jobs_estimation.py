@@ -21,7 +21,7 @@ import platform
 import numpy as np
 import pytest
 
-from collimator import DiagramBuilder, Parameter
+from collimator import DiagramBuilder, Parameter, SimulatorOptions
 from collimator.library import Adder, Constant, Gain, Integrator
 from collimator.optimization import ui_jobs
 from collimator.optimization.framework.base.optimizable import DesignParameter
@@ -135,6 +135,9 @@ def test_optimization_unbounded():
         output_port_names_to_column_names,
         _,
     ) = _make_subdiagram()
+
+    sim_options = SimulatorOptions(max_major_steps=1)
+
     opt_param, _ = ui_jobs.jobs_router(
         job_type,
         diagram,
@@ -148,6 +151,7 @@ def test_optimization_unbounded():
         output_port_names_to_column_names=output_port_names_to_column_names,
         constraint_port_names=[],
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     assert np.isclose(opt_param["c"], true_c, atol=0.1)
@@ -160,6 +164,9 @@ def test_optimization_unbounded():
         output_port_names_to_column_names,
         _,
     ) = _make_subdiagram()
+
+    sim_options = SimulatorOptions(max_major_steps=1)
+
     opt_param, _ = ui_jobs.jobs_router(
         job_type,
         diagram,
@@ -173,6 +180,7 @@ def test_optimization_unbounded():
         output_port_names_to_column_names=output_port_names_to_column_names,
         constraint_port_names=[],
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     assert np.isclose(opt_param["c"], true_c, atol=0.1)
@@ -185,6 +193,7 @@ def test_optimization_unbounded():
         output_port_names_to_column_names,
         _,
     ) = _make_subdiagram()
+    sim_options = SimulatorOptions(max_major_steps=1)
     opt_param, _ = ui_jobs.jobs_router(
         job_type,
         diagram,
@@ -198,6 +207,7 @@ def test_optimization_unbounded():
         output_port_names_to_column_names=output_port_names_to_column_names,
         constraint_port_names=[],
         print_every=200,
+        sim_options=sim_options,
     )
     assert np.isclose(opt_param["c"], true_c, atol=0.1)
     assert np.isclose(opt_param["k"], true_k, atol=0.1)
@@ -209,6 +219,7 @@ def test_optimization_unbounded():
         output_port_names_to_column_names,
         _,
     ) = _make_subdiagram()
+    sim_options = SimulatorOptions(max_major_steps=1)
     opt_param, _ = ui_jobs.jobs_router(
         job_type,
         diagram,
@@ -222,6 +233,7 @@ def test_optimization_unbounded():
         output_port_names_to_column_names=output_port_names_to_column_names,
         constraint_port_names=[],
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     assert np.isclose(opt_param["c"], true_c, atol=0.1)
@@ -250,6 +262,7 @@ def test_optimization_bounded():
         output_port_names_to_column_names,
         _,
     ) = _make_subdiagram()
+    sim_options = SimulatorOptions(max_major_steps=1)
     opt_param, _ = ui_jobs.jobs_router(
         job_type,
         diagram,
@@ -263,6 +276,7 @@ def test_optimization_bounded():
         output_port_names_to_column_names=output_port_names_to_column_names,
         constraint_port_names=[],
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     assert np.isclose(opt_param["c"], expected_c, atol=0.1)
@@ -275,6 +289,7 @@ def test_optimization_bounded():
         output_port_names_to_column_names,
         _,
     ) = _make_subdiagram()
+    sim_options = SimulatorOptions(max_major_steps=1)
     opt_param, _ = ui_jobs.jobs_router(
         job_type,
         diagram,
@@ -288,6 +303,7 @@ def test_optimization_bounded():
         output_port_names_to_column_names=output_port_names_to_column_names,
         constraint_port_names=[],
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     assert np.isclose(opt_param["c"], expected_c, atol=0.1)
@@ -318,6 +334,7 @@ def test_optimization_constrained_scipy():
         output_port_names_to_column_names,
         constraint_port_names,
     ) = _make_subdiagram(min_c_plus_k=min_c_plus_k)
+    sim_options = SimulatorOptions(max_major_steps=1)
     opt_param, _ = ui_jobs.jobs_router(
         job_type,
         diagram,
@@ -331,6 +348,7 @@ def test_optimization_constrained_scipy():
         output_port_names_to_column_names=output_port_names_to_column_names,
         constraint_port_names=constraint_port_names,
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     assert np.isclose(opt_param["c"], expected_c, atol=0.1)
@@ -364,6 +382,7 @@ def test_optimization_constrained_nlopt():
         output_port_names_to_column_names,
         constraint_port_names,
     ) = _make_subdiagram(min_c_plus_k=min_c_plus_k)
+    sim_options = SimulatorOptions(max_major_steps=1)
     opt_param, _ = ui_jobs.jobs_router(
         job_type,
         diagram,
@@ -377,6 +396,7 @@ def test_optimization_constrained_nlopt():
         output_port_names_to_column_names=output_port_names_to_column_names,
         constraint_port_names=constraint_port_names,
         print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     assert np.isclose(opt_param["c"], expected_c, atol=0.1)

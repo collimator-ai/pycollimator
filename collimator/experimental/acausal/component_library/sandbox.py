@@ -55,6 +55,11 @@ class TorqueSwitch(RotationalOnePort):
             ev, "offTrq", self.name, kind=SymKind.param, val=offTrq
         )
         cond_sym = self.declare_conditional(
-            ev, ev.t <= timeThr.s, onTrq.s, offTrq.s, "trqSwitch"
+            ev,
+            ev.t <= timeThr.s,
+            onTrq.s,
+            offTrq.s,
+            cond_name="trqSwitch",
+            non_bool_zc_expr=ev.t - timeThr.s,
         )
         self.add_eqs([sp.Eq(self.t.s, cond_sym.s)])

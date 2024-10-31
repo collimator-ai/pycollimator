@@ -28,8 +28,6 @@ the diagram.
 from __future__ import annotations
 
 import abc
-from functools import wraps
-import inspect
 import traceback
 from typing import (
     List,
@@ -38,8 +36,6 @@ from typing import (
     Hashable,
     Callable,
     Union,
-    ParamSpec,
-    TypeVar,
 )
 import dataclasses
 
@@ -48,7 +44,7 @@ import numpy as np
 from collimator.framework.error import BlockParameterError
 from ..backend import utils
 from ..logging import logger
-from .cache import SystemCallback
+from .cache import BasicOutputCache, SystemCallback
 from .event import FlatEventCollection
 from .parameter import Parameter
 from .port import InputPort, OutputPort
@@ -56,7 +52,7 @@ from .pprint import pprint_fancy
 from .dependency_graph import DependencyTicket, sort_trackers
 from .error import StaticError
 
-__all__ = ["SystemBase", "parameters"]
+__all__ = ["SystemBase"]
 
 if TYPE_CHECKING:
     # Array-like object, e.g. a JAX PyTree or a numpy ndarray.
@@ -86,95 +82,6 @@ def next_system_id() -> int:
 def reset_system_id():
     """Reset the system ID counter."""
     IDGenerator.reset()
-
-
-def _get_arg_names(func):
-    sig = inspect.signature(func)
-    positional_arg_names = []
-    all_args = []
-    for name, param in sig.parameters.items():
-        is_positional_or_keyword = param.kind in (
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.POSITIONAL_ONLY,
-        )
-        if is_positional_or_keyword and param.default == inspect.Parameter.empty:
-            positional_arg_names.append(name)
-        all_args.append(name)
-
-    return all_args, positional_arg_names
-
-
-def _get_default_value(init_func, param_name):
-    sig = inspect.signature(init_func)
-    param = sig.parameters[param_name]
-    if param.default == inspect.Parameter.empty:
-        return None
-    return param.default
-
-
-def _get_params(param_names, init_func, args, kwargs, use_defaults=True):
-    all_args, args_names = _get_arg_names(init_func)
-    all_args = all_args[1:]  # remove self
-    args_names = args_names[1:]  # remove self
-
-    params = {}
-    for k in param_names:
-        if k in kwargs:
-            params[k] = kwargs[k]
-        elif k in args_names:
-            idx = args_names.index(k)
-            if idx >= len(args):
-                raise ValueError(f"Missing required argument {k}")
-            params[k] = args[idx]
-        elif k in all_args and all_args.index(k) < len(args):
-            params[k] = args[all_args.index(k)]
-        elif use_defaults:
-            # kwarg's default value
-            params[k] = _get_default_value(init_func, k)
-    return params
-
-
-P = ParamSpec("P")
-T = TypeVar("T")
-
-
-def parameters(static: list[str] = None, dynamic: list[str] = None):
-    """Decorator to apply to the __init__ function of a system to declare
-    static or dynamic parameters."""
-
-    if static is None:
-        static = []
-
-    if dynamic is None:
-        dynamic = []
-
-    static_param_names = set(static)
-    dynamic_param_names = set(dynamic)
-
-    def decorator(init_func: Callable[P, T]) -> Callable[P, T]:
-        @wraps(init_func)
-        def wrapped_init(self, *args, **kwargs):
-            resolved_args = [
-                arg.get() if isinstance(arg, Parameter) else arg for arg in args
-            ]
-            resolved_kwargs = {
-                k: kwarg.get() if isinstance(kwarg, Parameter) else kwarg
-                for k, kwarg in kwargs.items()
-            }
-            init_func(self, *resolved_args, **resolved_kwargs)
-
-            static_params = _get_params(static_param_names, init_func, args, kwargs)
-            for param_name, value in static_params.items():
-                self.declare_static_parameter(param_name, value)
-
-            dyn_params = _get_params(dynamic_param_names, init_func, args, kwargs)
-            for param_name, value in dyn_params.items():
-                if value is not None:
-                    self.declare_dynamic_parameter(param_name, value)
-
-        return wrapped_init
-
-    return decorator
 
 
 class IDGenerator:
@@ -278,6 +185,13 @@ class SystemBase:
         # be created when the associated property is first accessed.  This should
         # only need to be done for the root system.
         self._cache_update_events: EventCollection = None
+
+        # Cached lists of i/o ports SystemCallbacks. Do not read this directly.
+        self._cached_input_ports: List[SystemCallback] = []
+        self._cached_output_ports: List[SystemCallback] = []
+
+        # Cache mechanism for numpy backend.
+        self._basic_output_cache: BasicOutputCache = BasicOutputCache(self)
 
     def __hash__(self) -> Hashable:
         return hash(self.system_id)
@@ -614,7 +528,11 @@ class SystemBase:
     #
     @property
     def input_ports(self) -> List[InputPort]:
-        return [self.callbacks[i] for i in self.input_port_indices]
+        if len(self._cached_input_ports) != len(self.input_port_indices):
+            ports = list(self.callbacks[i] for i in self.input_port_indices)
+            self._cached_input_ports.clear()
+            self._cached_input_ports.extend(ports)
+        return self._cached_input_ports
 
     def get_input_port(self, name: str) -> tuple[InputPort, int]:
         """Retrieve a specific input port by name."""
@@ -632,7 +550,11 @@ class SystemBase:
 
     @property
     def output_ports(self) -> List[OutputPort]:
-        return [self.callbacks[i] for i in self.output_port_indices]
+        if len(self._cached_output_ports) != len(self.output_port_indices):
+            ports = list(self.callbacks[i] for i in self.output_port_indices)
+            self._cached_output_ports.clear()
+            self._cached_output_ports.extend(ports)
+        return self._cached_output_ports
 
     def get_output_port(self, name: str) -> OutputPort:
         """Retrieve a specific output port by name."""
@@ -661,16 +583,54 @@ class SystemBase:
         """
         return self.input_ports[port_index].eval(context)
 
-    def collect_inputs(self, context: ContextBase) -> List[Array]:
+    def collect_inputs(
+        self, context: ContextBase, port_indices: list[int] = None
+    ) -> List[Array]:
         """Collect all current inputs for this system.
 
         Args:
             context (ContextBase): root context for this system
+            port_indices (List[int], optional): list of input port indices to collect.
+                If None (default), will return values from all ports.  Otherwise will
+                return a list of length(num_input_ports), where the values are None for
+                ports not in the list.
 
         Returns:
             List[Array]: list of all current input values
         """
-        return [self.eval_input(context, i) for i in range(self.num_input_ports)]
+        if port_indices is None:
+            port_indices = range(self.num_input_ports)
+
+        # Some blocks are hard-coded to have no inputs, so we should make
+        # sure that a list full of None is not returned in that case. This
+        # happens if the callback signature is (time, state, **parameters)
+        # instead of the more general (time, state, *inputs, **parameters)
+        if port_indices == []:
+            return []
+
+        # Right now this seems to be the best place to add the cache.
+        # FIXME: Caching outputs could work better if we knew which ones
+        # to target specifically (the more expensive ones).
+        inputs = self._basic_output_cache.get(context)
+
+        # If inputs is not None but is not consistent with the requested
+        # port_indices, we should recompute the inputs.  This is only an issue
+        # when using the NumPy-backend caching.
+        if inputs is not None:
+            if any(inputs[i] is None for i in port_indices):
+                inputs = None
+
+        if inputs is None:
+            inputs = []
+            for i in range(self.num_input_ports):
+                u_i = self.eval_input(context, i) if i in port_indices else None
+                inputs.append(u_i)
+            self._basic_output_cache.set(context, inputs)
+
+        return inputs
+
+    def invalidate_output_caches(self):
+        self._basic_output_cache.invalidate()
 
     def _eval_input_port(self, context: ContextBase, port_index: int) -> Array:
         """Evaluate an upstream input port given the _root_ context.
@@ -762,7 +722,7 @@ class SystemBase:
 
         callback_index = len(self.callbacks)
         port = InputPort(
-            _callback,
+            callback=_callback,
             system=self,
             callback_index=callback_index,
             name=port_name,
@@ -782,6 +742,7 @@ class SystemBase:
 
         self.input_port_indices.append(callback_index)
         self.callbacks.append(port)
+        self._cached_input_ports.clear()
 
         return port_index
 
@@ -879,6 +840,8 @@ class SystemBase:
         logger.debug("Adding output port %s to %s", port, self.name)
         self.output_port_indices.append(callback_index)
         self.callbacks.append(port)
+        self._cached_output_ports.clear()
+
         logger.debug(
             "    ---> %s now has %s output ports: %s",
             self.name,
@@ -913,25 +876,20 @@ class SystemBase:
         Returns:
             None
         """
-        old_port = self.output_ports[port_index]
 
         if prerequisites_of_calc is None:
             prerequisites_of_calc = [DependencyTicket.all_sources]
 
-        port = OutputPort(
-            callback,
-            system=self,
-            callback_index=old_port.callback_index,
-            name=old_port.name,
-            index=port_index,
-            prerequisites_of_calc=prerequisites_of_calc,
-            default_value=default_value,
-            event=event,
-            cache_index=cache_index,
-            ticket=old_port.ticket,
-        )
+        port = self.output_ports[port_index]
+        port.port_index = port_index
+        port._callback = callback
+        port.prerequisites_of_calc = prerequisites_of_calc
+        port.default_value = default_value
+        port.event = event
+        port.cache_index = cache_index
+        self.callbacks[port.callback_index] = port
+        self._cached_output_ports.clear()
 
-        self.callbacks[old_port.callback_index] = port
         logger.debug(
             "    ---> %s now has %s output ports: %s",
             self.name,
@@ -992,8 +950,6 @@ class SystemBase:
     @property
     def dependency_graph(self) -> DependencyGraph:
         """Retrieve (or create if necessary) the dependency graph for this system."""
-        if self._dependency_graph is None:
-            self.create_dependency_graph()
         return self._dependency_graph
 
     @abc.abstractproperty
@@ -1006,13 +962,7 @@ class SystemBase:
 
     def create_dependency_graph(self):
         """Create a dependency graph for this system."""
-        if self._dependency_graph is None:
-            self._dependency_graph = self.dependency_graph_factory()
-
-    def update_dependency_graph(self):
-        """Update the dependency graph for this system, if already created."""
-        if self._dependency_graph is not None:
-            self._dependency_graph = self.dependency_graph_factory()
+        self._dependency_graph = self.dependency_graph_factory()
 
     def initialize_static_data(self, context: ContextBase) -> ContextBase:
         """Initialize any context data that has to be done after context creation.
@@ -1093,7 +1043,9 @@ class SystemBase:
                 )
             if isinstance(value, list):
                 self._static_parameters[name] = Parameter(
-                    value=np.array(value), system=self, is_static=True
+                    value=np.array(value),
+                    system=self,
+                    is_static=True,
                 )
             else:
                 self._static_parameters[name] = Parameter(
@@ -1172,10 +1124,13 @@ class SystemBase:
 
         try:
             if isinstance(default_value, Parameter):
-                # FIXME: we should create a new Parameter object here for consistency
-                # but this messes up the serialization here.
-                self._dynamic_parameters[name] = default_value
-                self._dynamic_parameters[name].as_array = as_array
+                self._dynamic_parameters[name] = Parameter(
+                    value=default_value,
+                    dtype=dtype,
+                    shape=shape,
+                    system=self,
+                    as_array=as_array,
+                )
             else:
                 if as_array:
                     default_value = utils.make_array(
@@ -1202,3 +1157,8 @@ class SystemBase:
                 system=self,
                 parameter_name=name,
             ) from e
+
+    @property
+    def has_dirty_static_parameters(self) -> bool:
+        """Check if any static parameters have been modified."""
+        return any(param.is_dirty for param in self.static_parameters.values())

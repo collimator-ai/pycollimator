@@ -78,6 +78,7 @@ class LinearDiscreteTimeMPC(LeafSystem):
         warm_start=False,
     ):
         super().__init__(name=name)
+        lin_sys.create_context()
         self.n = lin_sys.A.shape[0]
         self.m = lin_sys.B.shape[1]
         self.N = N
@@ -227,6 +228,7 @@ class LinearDiscreteTimeMPC_OSQP(LeafSystem):
         name=None,
     ):
         super().__init__(name=name)
+        lin_sys.create_context()
         self.n = lin_sys.A.shape[0]
         self.m = lin_sys.B.shape[1]
         self.N = N

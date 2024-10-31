@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Callable, Any
 
 import numpy as np
 import jax
+from jax import lax
 import jax.numpy as jnp
 from ..logging import logger
 from ..profiling import Profiler
@@ -369,12 +370,13 @@ def simulate(
             context (if `options.return_context` is `True`).
 
     Notes:
-        results_options is currently unused, pending:
-            https://collimator.atlassian.net/browse/DASH-1350
-
         If `recorded_signals` is provided as a kwarg, it will override any entry in
         `options.recorded_signals`. This will be deprecated in the future in favor of
         only passing via `options`.
+
+        This function is meant to best handle single independent simulations.
+        Calling this function repeatedly will always trigger a recompilation of the
+        model when using the JAX backend. To avoid this, call advance_to directly.
     """
 
     options = _check_options(system, options, tspan, recorded_signals)
@@ -386,6 +388,11 @@ def simulate(
         raise NotImplementedError(
             f"Simulation output mode {results_options.mode.name} is not supported. "
             "Only 'auto' is presently supported."
+        )
+
+    if system.has_dirty_static_parameters:
+        raise ValueError(
+            "Some static parameters have been updated. Please create a new context."
         )
 
     # HACK: Wildcat presently does not use interpolant to produce
@@ -1561,8 +1568,8 @@ def _bisection_step_fun(step_sol, i, carry: GuardIsolationData):
 # Custom VJP for advancing continuous time with an ODE solver
 #
 #
-@partial(jax.custom_vjp, nondiff_argnums=(0, 1))
-def _odeint(solver: ODESolverBase, ode_rhs, solver_state, tf, context):
+@partial(jax.custom_vjp, nondiff_argnums=(0, 1, 5))
+def _odeint(solver: ODESolverBase, ode_rhs, solver_state, tf, context, checkpoint=True):
     """Unguarded ODE integration.
 
     This function unconditionally advances time to the end of an interval.
@@ -1575,6 +1582,7 @@ def _odeint(solver: ODESolverBase, ode_rhs, solver_state, tf, context):
     the guarded ODE solve, it does not need to be conditionally wrapped by the simulator
     as the guarded solve does. Hence we can define it as a standalone function.
     """
+    max_checkpoints = solver.max_checkpoints
 
     # Close over the additional arguments so that the RHS function has the
     # signature `func(y, t)`.  We can't do this anywhere upstream because
@@ -1590,20 +1598,95 @@ def _odeint(solver: ODESolverBase, ode_rhs, solver_state, tf, context):
         t, dt = solver_state.t, solver_state.dt
         return (t < tf) & (dt > 0)
 
-    return backend.while_loop(cond_fun, _ode_step, solver_state)
+    # This function does a sort of simplified recursive checkpointing, where we start
+    # by filling up the checkpoints array with every minor step. Once the array is
+    # full, every other checkpoint gets compressed to the first half of the array, and
+    # the "depth" (how frequently we checkpoint) doubles.  This is a bit of a hack to
+    # get around the fact that we can't resize the array in JAX and we don't know
+    # beforehand how many minor steps we'll need.
+    def body_fun(carry):
+        # The "depth" is how many ODE solver steps are taken in between
+        # checkpoints.  It will double every time the checkpoint array
+        # fills up.  The "index" is the current index in the checkpoint
+        # array. It will increment every "depth" steps. The loop counter "i"
+        # tracks the number of steps taken since the last checkpoint (so it
+        # counts from 0 to "depth" before "index" is incremented.
+        i, index, depth, solver_state, checkpoints = carry
+
+        # Step with the ODE solver
+        solver_state = _ode_step(solver_state)
+
+        # Check if we need to store the current state and time in the checkpoints array
+        # (chk_step) and if we've reached the end of the checkpoint array (ext_step).
+        chk_step = i + 1 == depth
+        ext_step = chk_step & (index + 1 == max_checkpoints)
+        i = jnp.where(chk_step, 0, i + 1)
+
+        index = jnp.where(chk_step, index + 1, index)
+        index = jnp.where(ext_step, max_checkpoints // 2, index)
+
+        # If the index reaches the end of the array, we have to "extend" the checkpoint
+        # array without being able to resize it.  We do this by moving every other
+        # checkpoint to the first half of the array and doubling the depth.
+        # Set all the second half of the array to NaN to mark unused checkpoints.
+        depth = jnp.where(ext_step, 2 * depth, depth)
+        checkpoints = jnp.where(
+            ext_step,
+            checkpoints.at[: max_checkpoints // 2]
+            .set(checkpoints[::2])
+            .at[max_checkpoints // 2 :]
+            .set(jnp.nan),
+            checkpoints,
+        )
+
+        # Store the current state and time in the checkpoints array
+        # if we have reached the next checkpoint.
+        yt = jnp.append(solver_state.y, solver_state.t)
+        checkpoints = jnp.where(chk_step, checkpoints.at[index].set(yt), checkpoints)
+
+        return i, index, depth, solver_state, checkpoints
+
+    if checkpoint:
+        # The loop collects the times and states to "checkpoint" the adjoint simulation
+        # at certain time steps.  Note that this is returned as auxiliary data - the
+        # _odeint function called by Simulator evaluates _odeint_fwd (below), which
+        # only returns the solver state and not the collected time series data.
+        checkpoints = jnp.full((max_checkpoints, solver_state.y.size + 1), jnp.nan)
+
+        # Store the initial state and time in the checkpoints array
+        checkpoints = checkpoints.at[0].set(jnp.append(solver_state.y, solver_state.t))
+        carry = (0, 0, 1, solver_state, checkpoints)
+
+        _i, index, _depth, solver_state, checkpoints = lax.while_loop(
+            lambda carry: cond_fun(carry[3]), body_fun, carry
+        )
+
+        # Save the last state in the checkpoints array (will be used to
+        # initialize adjoint pass)
+        index = jnp.maximum(index + 1, max_checkpoints - 1)
+        yt = jnp.append(solver_state.y, solver_state.t)
+        checkpoints = checkpoints.at[index].set(yt)
+
+        # Fill unused entries with the final state
+        checkpoints = jnp.where(jnp.isnan(checkpoints), yt, checkpoints)
+        return solver_state, checkpoints
+
+    return lax.while_loop(cond_fun, _ode_step, solver_state)
 
 
 # The "forward pass" through the ODE solve, but don't save any time-series data
-def _odeint_fwd(solver, ode_rhs, solver_state, tf, context):
-    primals = _odeint(solver, ode_rhs, solver_state, tf, context)
-    residuals = (primals, solver_state.t, tf, context)
-    return primals, residuals
+def _odeint_fwd(solver, ode_rhs, solver_state, tf, context, checkpoint=True):
+    solver_state, checkpoints = _odeint(solver, ode_rhs, solver_state, tf, context)
+    ts = checkpoints[:, -1]
+    ys = checkpoints[:, :-1]
+    residuals = (solver_state, tf, context, ts, ys)
+    return solver_state, residuals
 
 
 # The "reverse pass" through the ODE solve, using an augmented dynamical
 # system with the adjoint variables.
-def _odeint_adj(solver, ode_rhs, residuals, adjoints):
-    primals, t0, tf, context = residuals
+def _odeint_adj(solver, ode_rhs, _checkpoint, residuals, adjoints):
+    primals, tf, context, ts, ys = residuals
 
     # The args may contain bools, ints, or otherwise non-differentiable data.
     # Here we can split the args into dynamic and static components, and only
@@ -1659,7 +1742,23 @@ def _odeint_adj(solver, ode_rhs, residuals, adjoints):
         ode_rhs, init_adj_state, tf, context
     )
 
-    solver_state = _odeint(solver, adj_dynamics, solver_state, -t0, context)
+    # Mimic the forward solve but with the adjoint dynamics and using the checkpointed
+    # values for restarts.
+    ny = len(yf)
+    n_steps = len(ts)
+
+    def body_fun(i, solver_state):
+        # Update the solver state entries corresponding to the primal values with the
+        # values from the forward simulation.
+        idx = n_steps - i
+        adj_state = solver_state.y.at[:ny].set(ys[idx])
+        solver_state = solver_state.with_state_and_time(adj_state, -ts[idx])
+        return _odeint(
+            solver, adj_dynamics, solver_state, -ts[idx - 1], context, checkpoint=False
+        )
+
+    solver_state = lax.fori_loop(0, n_steps, body_fun, solver_state)
+
     _, y0_bar, t0_bar, ctx_bar = solver_state.unravel(solver_state.y)
 
     # The Jacobian with respect to the final time is just the time derivative of

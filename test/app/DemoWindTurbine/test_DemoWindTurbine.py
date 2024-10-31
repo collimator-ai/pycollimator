@@ -15,6 +15,9 @@ import pytest
 import collimator.testing as test
 import time
 
+from collimator.testing.markers import skip_if_not_jax
+
+skip_if_not_jax()
 pytestmark = pytest.mark.app
 
 

@@ -300,6 +300,18 @@ class LegacyBlockConfigurationError(StaticError):
         )
 
 
+class StaticParameterError(CollimatorError):
+    """Error raised when attempting to update a static parameter in a context."""
+
+    pass
+
+
+class CallbackIsNotDifferentiableError(StaticError):
+    """Error raised when trying to differentiate a callback not differentiable."""
+
+    pass
+
+
 class ErrorCollector:
     """
     Tool used to collect errors related to users model specification.

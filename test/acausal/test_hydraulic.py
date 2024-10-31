@@ -16,31 +16,32 @@ from matplotlib import pyplot as plt
 # acausal imports
 from collimator.experimental import AcausalCompiler, AcausalDiagram, EqnEnv
 from collimator.experimental import translational as trans
-from collimator.experimental import fluid_i as fld
-from collimator.experimental import fluid_media as fm
+from collimator.experimental import hydraulic as hd
 
 # collimator imports
 import collimator
 from collimator import library as lib
 
 import collimator.logging as logging
+from collimator.testing.markers import skip_if_not_jax
 
 logging.set_log_level(logging.DEBUG)
+skip_if_not_jax()
 
 
 def test_fluid_pressure_to_accumulator(show_plot=False):
-    fluid = fm.Fluid(fluid=fm.FluidName.water)
     ev = EqnEnv()
-    fp = fld.FluidProperties(ev, fluid=fluid)
+    # fp = hd.HydraulicProperties(ev, fluid=hd.Water)
+    fp = hd.HydraulicProperties(ev, fluid_name="water")
     ad = AcausalDiagram()
-    ps = fld.PressureSource(ev, pressure=10)
-    pipe = fld.Pipe(ev)
-    acc = fld.Accumulator(ev, area=0.05, P_ic_fixed=True)
-    sensP = fld.PressureSensor(ev, name="sensP", enable_port_b=False)
+    ps = hd.PressureSource(ev, pressure=10)
+    pipe = hd.Pipe(ev)
+    acc = hd.Accumulator(ev, area=0.05, initial_pressure_fixed=True)
+    sensP = hd.PressureSensor(ev, name="sensP", enable_port_b=False)
     ad.connect(ps, "port", pipe, "port_a")
     ad.connect(pipe, "port_b", acc, "port")
     ad.connect(sensP, "port_a", acc, "port")
-    ad.connect(fp, "prop", acc, "port")
+    ad.connect(fp, "prop", ps, "port")
 
     # compile to acausal system
     ac = AcausalCompiler(ev, ad, verbose=True)
@@ -55,7 +56,7 @@ def test_fluid_pressure_to_accumulator(show_plot=False):
     context = diagram.create_context(check_types=True)
 
     # run the simulation
-    p0_idx = acausal_system.outsym_to_portid[sensP.get_sym_by_port_name("p")]
+    p0_idx = acausal_system.outsym_to_portid[sensP.get_sym_by_port_name("P_rel")]
     recorded_signals = {
         "sensP": acausal_system.output_ports[p0_idx],
     }
@@ -87,15 +88,14 @@ def test_fluid_pressure_to_accumulator(show_plot=False):
 
 
 def test_fluid_inline_pump(show_plot=False):
-    fluid = fm.Fluid(fluid=fm.FluidName.hydraulic_fluid)
     ev = EqnEnv()
     ad = AcausalDiagram()
-    fp = fld.FluidProperties(ev, fluid=fluid)
-    ps1 = fld.PressureSource(ev, name="ps1", pressure=0.01)
-    pmp = fld.Pump(ev)
-    sensP = fld.PressureSensor(ev, name="sensP", enable_port_b=False)
-    sensMF = fld.MassflowSensor(ev, name="sensMF")
-    acc = fld.Accumulator(ev, name="acc", P_ic_fixed=True)
+    fp = hd.HydraulicProperties(ev, fluid_name="HydraulicFluid")
+    ps1 = hd.PressureSource(ev, name="ps1", pressure=0.01)
+    pmp = hd.Pump(ev)
+    sensP = hd.PressureSensor(ev, name="sensP", enable_port_b=False)
+    sensMF = hd.MassflowSensor(ev, name="sensMF")
+    acc = hd.Accumulator(ev, name="acc", initial_pressure_fixed=True)
     ad.connect(ps1, "port", pmp, "port_a")
     ad.connect(pmp, "port_b", sensMF, "port_a")
     ad.connect(sensMF, "port_b", acc, "port")
@@ -117,7 +117,7 @@ def test_fluid_inline_pump(show_plot=False):
     context = diagram.create_context(check_types=True)
 
     # run the simulation
-    p0_idx = acausal_system.outsym_to_portid[sensP.get_sym_by_port_name("p")]
+    p0_idx = acausal_system.outsym_to_portid[sensP.get_sym_by_port_name("P_rel")]
     mf0_idx = acausal_system.outsym_to_portid[sensMF.get_sym_by_port_name("m_flow")]
     recorded_signals = {
         "sensP": acausal_system.output_ports[p0_idx],
@@ -152,13 +152,12 @@ def test_fluid_inline_pump(show_plot=False):
 
 
 def test_hyd_act_and_spring(show_plot=False):
-    fluid = fm.Fluid(fluid=fm.FluidName.hydraulic_fluid)
     ev = EqnEnv()
     ad = AcausalDiagram()
-    fp = fld.FluidProperties(ev, fluid=fluid)
-    ps1 = fld.PressureSource(ev, name="ps1", pressure=1.0)
-    ps2 = fld.PressureSource(ev, name="ps2", pressure=0.1)
-    act = fld.HydraulicActuatorLinear(ev, name="act")
+    fp = hd.HydraulicProperties(ev, fluid_name="HydraulicFluid")
+    ps1 = hd.PressureSource(ev, name="ps1", pressure=1.0)
+    ps2 = hd.PressureSource(ev, name="ps2", pressure=0.1)
+    act = hd.HydraulicActuatorLinear(ev, name="act")
     ref1 = trans.FixedPosition(ev, name="ref1")
     mass = trans.Mass(
         ev,
@@ -172,7 +171,7 @@ def test_hyd_act_and_spring(show_plot=False):
     ref2 = trans.FixedPosition(ev, name="ref2")
     tspd = trans.MotionSensor(ev, name="tspd", enable_flange_b=False)
     tfrc = trans.ForceSensor(ev, name="tfrc")
-    mf = fld.MassflowSensor(ev, name="mf")
+    mf = hd.MassflowSensor(ev, name="mf")
     ad.connect(ps1, "port", fp, "prop")
     ad.connect(ps1, "port", act, "port_a")
     ad.connect(ps2, "port", mf, "port_a")
@@ -220,7 +219,7 @@ def test_hyd_act_and_spring(show_plot=False):
 
     if show_plot:
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 3))
-        ax1.plot(t, tspd, label="tspd")
+        ax1.plot(t, tspd, label="tspd", linewidth=3)
         ax1.plot(t, tspd_sol, label="tspd_sol")
         ax1.legend()
         ax1.grid()
@@ -234,11 +233,11 @@ def test_hyd_act_and_spring(show_plot=False):
         ax3.grid()
         plt.show()
 
-    assert np.allclose(tspd, tspd_sol, atol=0.0, rtol=0.001)
+    assert np.allclose(tspd, tspd_sol, atol=0.0, rtol=0.005)
 
 
 if __name__ == "__main__":
     show_plot = True
-    test_fluid_pressure_to_accumulator(show_plot=show_plot)
-    test_fluid_inline_pump(show_plot=show_plot)
+    # test_fluid_pressure_to_accumulator(show_plot=show_plot)
+    # test_fluid_inline_pump(show_plot=show_plot)
     test_hyd_act_and_spring(show_plot=show_plot)

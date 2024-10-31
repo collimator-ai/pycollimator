@@ -82,12 +82,25 @@ def time_mode_node(node) -> TimeMode:
     return None
 
 
+def time_mode_diagram(children_tm: list[TimeMode]) -> TimeMode:
+    # Group time_mode rules: Hybrid means that the group has both continuous and
+    # discrete children, as defined in https://en.wikipedia.org/wiki/Hybrid_system
+    # FIXME: a hybrid child should probably mark the parent as hybrid too
+    if TimeMode.CONTINUOUS in children_tm and TimeMode.DISCRETE in children_tm:
+        return TimeMode.HYBRID
+    elif TimeMode.CONTINUOUS in children_tm:
+        return TimeMode.CONTINUOUS
+    elif TimeMode.DISCRETE in children_tm:
+        return TimeMode.DISCRETE
+    else:
+        return TimeMode.CONSTANT
+
+
 def time_mode_node_with_ports(ports_tm: list[TimeMode]) -> TimeMode:
     # node time_mode rules for block which do not have time mode assigned based on their
     # class.
     if TimeMode.CONTINUOUS in ports_tm and TimeMode.DISCRETE in ports_tm:
-        # this case is actually used for subdiagrams, and ports_tm is actaully
-        # a list of the subdiagams' nodes time_modes.
+        # afaik this case does not exist at the moment -- @jp
         return TimeMode.HYBRID
     elif TimeMode.CONTINUOUS in ports_tm:
         return TimeMode.CONTINUOUS

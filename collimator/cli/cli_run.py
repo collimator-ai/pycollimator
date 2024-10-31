@@ -12,12 +12,21 @@
 # <https://www.gnu.org/licenses/>.
 
 
+import functools
 import json
 import os
 
 import click
 
 import collimator
+from collimator.logging import logger
+
+
+def _show_progress(start: float, end: float, current: float):
+    elapsed = current - start
+    total = end - start
+    percent = 100 * elapsed / total
+    logger.info(f"Progress: {percent:.1f}% ({elapsed:.3f}/{total:.3f})")
 
 
 @click.command(
@@ -49,10 +58,20 @@ import collimator
     help="Disable all output recording (for performance testing)",
 )
 @click.option(
+    "--check-only",
+    is_flag=True,
+    help="Stop after check (before JIT)",
+)
+@click.option(
     "--end_time",
     default=None,
     type=float,
     help="Override end time of the simulation",
+)
+@click.option(
+    "--progress",
+    is_flag=True,
+    help="Show progress during simulation",
 )
 def collimator_run(
     model: os.PathLike,
@@ -60,20 +79,38 @@ def collimator_run(
     signalsdir=None,
     no_output=False,
     end_time=None,
+    progress=False,
+    check_only=False,
 ):
     if no_output and signalsdir is not None:
         click.echo("Disabling all output recording (ignores signalsdir)")
         signalsdir = None
 
+    logger.info('Loading "%s"... (pid: %s)', model, os.getpid())
+
     modeldir = os.path.dirname(model)
     app = collimator.load_model(
-        modeldir, model=model, npydir=signalsdir, logsdir=logsdir
+        modeldir, model=model, npydir=signalsdir, logsdir=logsdir, check=False
     )
+    logger.info("Checking model with %s...", app.simulator_options.math_backend)
+    app.check(write_signals_json=logsdir is not None)
+
+    if check_only:
+        return
 
     if end_time is not None:
         app.sim_context.stop_time = float(end_time)
 
-    _ = app.simulate()
+    if progress:
+        _show_progress(0, app.sim_context.stop_time, 0.0)
+        app.simulator_options.major_step_callback = functools.partial(
+            _show_progress, 0.0, app.sim_context.stop_time
+        )
+
+    logger.info("Starting simulation...")
+    _ = app.simulate(
+        start_time=app.sim_context.start_time, stop_time=app.sim_context.stop_time
+    )
 
 
 # Alternative top-level function that is somewhat friendlier for use from

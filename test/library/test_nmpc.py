@@ -24,6 +24,10 @@ from collimator.library import (
     HermiteSimpsonNMPC,
 )
 
+from collimator.testing.markers import skip_if_not_jax
+
+skip_if_not_jax()
+
 
 def test_nmpc_direct_transcription():
     """

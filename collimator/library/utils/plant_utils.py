@@ -13,9 +13,10 @@
 """Utilities to generate a function that evaluates ODE RHS for a plant"""
 
 import jax
-import jax.numpy as jnp
 
 from jax.flatten_util import ravel_pytree
+
+from collimator.backend import numpy_api as cnp
 
 
 def make_ode_rhs(plant, nu):
@@ -34,7 +35,7 @@ def make_ode_rhs(plant, nu):
     """
     # create a base context
     input_port = plant.input_ports[0]
-    with input_port.fixed(jnp.zeros(nu)):
+    with input_port.fixed(cnp.zeros(nu)):
         base_context = plant.create_context()
 
     # base_context.continuous_state is a list if plant is a Diagram

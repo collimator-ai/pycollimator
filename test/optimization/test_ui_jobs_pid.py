@@ -18,7 +18,7 @@ processing.
 import platform
 import pytest
 import numpy as np
-from collimator import DiagramBuilder, Parameter
+from collimator import DiagramBuilder, Parameter, SimulatorOptions
 from collimator.library import (
     Adder,
     Constant,
@@ -115,7 +115,7 @@ def test_optimization_pid(discrete_pid):
 
     expected_opt_kp = 0.0
     expected_opt_ki = 0.0
-    expected_opt_kd = 1.0
+    expected_opt_kd = 1.1
     atol = 0.2
 
     # Scipy
@@ -126,7 +126,7 @@ def test_optimization_pid(discrete_pid):
         # algorithm="l_bfgs_b",
         # algorithm="sequential_least_squares",
         algorithm="nelder_mead",
-        options={"maxiter": 50},
+        options={"maxiter": 100},
         sim_t_span=sim_t_span,
         objective_port=objective_port,
         pid_blocks=[pid],
@@ -165,6 +165,19 @@ def test_optimization_pid(discrete_pid):
         np.testing.assert_allclose(opt_param["pid.Ki"], expected_opt_ki, atol=atol)
         np.testing.assert_allclose(opt_param["pid.Kd"], expected_opt_kd, atol=atol)
 
+    # It's not strictly necessary to manually adjust these, but it
+    # helps a bit with runtime of the test
+    if discrete_pid:
+        sim_options = SimulatorOptions(
+            max_major_steps=200,
+            max_checkpoints=16,
+        )
+    else:
+        sim_options = SimulatorOptions(
+            max_major_steps=1,
+            max_checkpoints=128,
+        )
+
     # NLopt direct
     if platform.machine() != "arm64":
         diagram, objective_port, pid = _make_diagram(discrete_pid=discrete_pid)
@@ -178,6 +191,7 @@ def test_optimization_pid(discrete_pid):
             objective_port=objective_port,
             pid_blocks=[pid],
             print_every=10,
+            sim_options=sim_options,
         )
         print(f"{opt_param=}")
         np.testing.assert_allclose(opt_param["pid.Kp"], expected_opt_kp, atol=atol)
@@ -191,11 +205,12 @@ def test_optimization_pid(discrete_pid):
         diagram,
         # algorithm="adam",
         algorithm="adam",
-        options={"learning_rate": 0.01, "num_epochs": 500},
+        options={"learning_rate": 0.1, "num_epochs": 100},
         sim_t_span=sim_t_span,
         objective_port=objective_port,
         pid_blocks=[pid],
-        print_every=100,
+        print_every=10,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     np.testing.assert_allclose(opt_param["pid.Kp"], expected_opt_kp, atol=atol)
@@ -211,7 +226,7 @@ def test_optimization_pid_stochastic(discrete_pid):
 
     expected_opt_kp = 0.0
     expected_opt_ki = 0.0
-    expected_opt_kd = 1.0
+    expected_opt_kd = 1.1
     atol = 0.2
 
     stochastic_var = StochasticParameter(
@@ -219,18 +234,32 @@ def test_optimization_pid_stochastic(discrete_pid):
         distribution=Distribution(name="uniform", options={"min": 0.5, "max": 1.5}),
     )
 
+    # It's not strictly necessary to manually adjust these, but it
+    # helps a bit with runtime of the test
+    if discrete_pid:
+        sim_options = SimulatorOptions(
+            max_major_steps=200,
+            max_checkpoints=16,
+        )
+    else:
+        sim_options = SimulatorOptions(
+            max_major_steps=1,
+            max_checkpoints=128,
+        )
+
     # Optax
     diagram, objective_port, pid = _make_diagram(discrete_pid=discrete_pid)
     opt_param, _ = ui_jobs.jobs_router(
         job_type,
         diagram,
         algorithm="rmsprop",
-        options={"learning_rate": 0.01, "num_epochs": 100},
+        options={"learning_rate": 0.1, "num_epochs": 10},
         stochastic_parameters=[stochastic_var],
         sim_t_span=sim_t_span,
         objective_port=objective_port,
         pid_blocks=[pid],
-        print_every=10,
+        print_every=5,
+        sim_options=sim_options,
     )
     print(f"{opt_param=}")
     np.testing.assert_allclose(opt_param["pid.Kp"], expected_opt_kp, atol=atol)

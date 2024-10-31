@@ -31,6 +31,8 @@ from .framework import (
 from .pid_autotuning import AutoTuner
 from .training import Trainer
 
+from .rl_env import RLEnv
+
 __all__ = [
     "Trainer",
     "Optimizable",
@@ -50,4 +52,5 @@ __all__ = [
     "LogitTransform",
     "NegativeNegativeLogTransform",
     "NormalizeTransform",
+    "RLEnv",
 ]

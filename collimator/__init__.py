@@ -10,13 +10,13 @@
 # Affero General Public License along with this program. If not, see
 # <https://www.gnu.org/licenses/>.
 
-import os
-
-from . import logging
+from . import _init  # noqa: F401
 from .framework import (
     LeafSystem,
     DiagramBuilder,
     Parameter,
+    parameters,
+    ports,
 )
 from .backend import dispatcher as backend
 
@@ -33,17 +33,6 @@ from .simulation import (
 )
 from .cli import load_model, load_model_from_dir
 from .version import __version__
-
-_log_level = os.environ.get("LOG_LEVEL", "INFO")
-logging.set_log_level(_log_level)
-logging.set_stream_handler()
-
-_per_package_log_levels = os.environ.get("LOG_LEVELS", None)
-if _per_package_log_levels is not None:
-    _per_package_log_levels = _per_package_log_levels.split(",")
-    _per_package_log_levels = [level.split(":") for level in _per_package_log_levels]
-    for pkg, level in _per_package_log_levels:
-        logging.set_log_level(level, pkg=pkg)
 
 set_backend = backend.set_backend
 
@@ -65,4 +54,6 @@ __all__ = [
     "backend",
     "set_backend",
     "Parameter",
+    "parameters",
+    "ports",
 ]

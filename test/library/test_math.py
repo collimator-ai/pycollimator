@@ -45,6 +45,7 @@ from collimator.framework.error import BlockParameterError
 from collimator.framework.error import StaticError
 from collimator.logging import logger
 from collimator.backend import numpy_api as cnp
+from collimator.testing import requires_jax
 
 
 pytestmark = pytest.mark.minimal
@@ -63,8 +64,12 @@ int_dtypes = [
 
 
 class TestAbs:
+    @requires_jax()
     @pytest.mark.parametrize("dtype", float_dtypes)
     def test_sin_input(self, dtype):
+        # NOTE: this is a weirdly written test... it may be OK to remove it
+        # Somehow only works with JAX backend on some dtypes and it bypasses the sim framework
+
         t = np.linspace(0.0, 10.0, 100, dtype=dtype)
 
         block = library.Abs(name="Abs_0")
@@ -218,8 +223,11 @@ class TestAdder:
         assert y.dtype == dtype
 
     def test_invalid_input(self):
+        builder = collimator.DiagramBuilder()
         with pytest.raises(BlockParameterError) as e:
-            library.Adder(2, operators="*/", name="Adder")
+            builder.add(library.Adder(2, operators="*/", name="Adder"))
+            diagram = builder.build()
+            diagram.create_context()
         # Success! The test failed as expected.
         print(e)
         assert (
@@ -290,8 +298,11 @@ class TestExponent:
         assert jnp.allclose(y, jnp.exp(4.0))
 
     def test_invalid_input(self):
+        builder = collimator.DiagramBuilder()
         with pytest.raises(BlockParameterError) as e:
-            library.Exponent(base=2, name="Exponent")
+            builder.add(library.Exponent(base=2, name="Exponent"))
+            diagram = builder.build()
+            diagram.create_context()
         # Success! The test failed as expected.
         print(e)
         assert (
@@ -463,8 +474,11 @@ class TestLogarithm:
         assert jnp.allclose(y10, jnp.log10(4.0))
 
     def test_invalid_input(self):
+        builder = collimator.DiagramBuilder()
         with pytest.raises(BlockParameterError) as e:
-            library.Logarithm(base=2, name="Logarithm")
+            builder.add(library.Logarithm(base=2, name="Logarithm"))
+            diagram = builder.build()
+            diagram.create_context()
         # Success! The test failed as expected.
         print(e)
         assert (
@@ -576,8 +590,11 @@ class TestProduct:
         # assert y.dtype == dtype # jnp does some type promotion. let's not bother validating that.
 
     def test_invalid_input(self):
+        builder = collimator.DiagramBuilder()
         with pytest.raises(BlockParameterError) as e:
-            library.Product(2, operators="+-", name="Product")
+            builder.add(library.Product(2, operators="+-", name="Product"))
+            diagram = builder.build()
+            diagram.create_context()
         # Success! The test failed as expected.
         print(e)
         assert (
@@ -715,8 +732,11 @@ class TestScalarBroadcast:
         assert y.dtype == jnp.float64
 
     def test_invalid_input(self):
+        builder = collimator.DiagramBuilder()
         with pytest.raises(BlockParameterError) as e:
-            library.ScalarBroadcast(m=None, n=0, name="ScalarBroadcast")
+            builder.add(library.ScalarBroadcast(m=None, n=0, name="ScalarBroadcast"))
+            diagram = builder.build()
+            diagram.create_context()
         # Success! The test failed as expected.
         print(e)
         assert (
@@ -854,8 +874,15 @@ class TestMatrixInversion:
         ), "Inverse does not match expected result for known matrix."
 
     def test_singular_matrix(self):
-        singular_matrix = jnp.array([[1, 2], [2, 4]])  # This matrix is singular
-        assert jnp.all(jnp.isinf(self.evaluate_matrix_inversion(singular_matrix)))
+        # FIXME Can we reconcile JAX and numpy's behavior?
+        if cnp.active_backend == "numpy":
+            with pytest.raises(StaticError):
+                _ = self.evaluate_matrix_inversion(
+                    np.array([[1, 2], [2, 4]])  # This matrix is singular
+                )
+        else:
+            singular_matrix = jnp.array([[1, 2], [2, 4]])  # This matrix is singular
+            assert jnp.all(jnp.isinf(self.evaluate_matrix_inversion(singular_matrix)))
 
     @pytest.mark.parametrize("size", [3, 5, 10])
     def test_random_matrix(self, size):
@@ -1015,9 +1042,11 @@ class TestSlice:
         assert np.allclose(y, sol)
 
     def test_invalid_input(self):
+        builder = collimator.DiagramBuilder()
         with pytest.raises(BlockParameterError) as e:
-            library.Slice(slice_="3-5", name="Slice_0")
-
+            builder.add(library.Slice(slice_="3-5", name="Slice_0"))
+            diagram = builder.build()
+            diagram.create_context()
         # Success! The test failed as expected.
         print(e)
         assert (
@@ -1142,8 +1171,11 @@ class TestTrigonometric:
         assert np.allclose(y, fun_sol(1.0))
 
     def test_invalid_input(self):
+        builder = collimator.DiagramBuilder()
         with pytest.raises(BlockParameterError) as e:
-            library.Trigonometric(function="sine")
+            builder.add(library.Trigonometric(function="sine"))
+            diagram = builder.build()
+            diagram.create_context()
         # Success! The test failed as expected.
         print(e)
         assert (

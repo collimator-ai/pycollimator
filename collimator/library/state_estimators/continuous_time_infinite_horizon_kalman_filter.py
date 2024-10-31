@@ -12,6 +12,7 @@
 
 """Implements Continuous-time Infinite Horizon Kalman Filter LeafSystem"""
 
+from collimator.framework.parameter import with_resolved_parameters
 from ...backend import numpy_api as cnp
 
 from .utils import linearize_plant
@@ -114,6 +115,7 @@ class ContinuousTimeInfiniteHorizonKalmanFilter(LeafSystem):
     # Make filter for a continuous plant  #
     #######################################
     @staticmethod
+    @with_resolved_parameters
     def for_continuous_plant(
         plant,
         x_eq,

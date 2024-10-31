@@ -18,4 +18,4 @@
 # minor update for major new features
 # major update shouldn't happen for now
 # TODO: better respect semver (re: breaking api changes)
-__version__ = "2.0.6"
+__version__ = "2.0.9"

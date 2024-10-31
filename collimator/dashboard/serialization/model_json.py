@@ -18,12 +18,16 @@ import dataclasses
 from typing import Optional
 from uuid import uuid4
 
+# FIXME DataClassJsonMixin outputs null which is not compatible with the frontend
+# in some cases (checks against undefined).
 from dataclasses_json import DataClassJsonMixin, dataclass_json
 
 from collimator.simulation import ResultsOptions, SimulatorOptions
+from .ui_types import ToApiMixin
 
 
-# The use of uuid.UUID causes issues with json [de]serialization.
+# The use of uuid.UUID causes issues with json [de]serialization, so we instead
+# use str everywhere, and this type name is just for clarity.
 UUID = str
 
 
@@ -142,6 +146,7 @@ class SolverConfig:
     min_step: Optional[float] = 0
     relative_tolerance: Optional[float] = 1e-3
     absolute_tolerance: Optional[float] = 1e-6
+    max_checkpoints: Optional[int] = 16
 
 
 @dataclass_json
@@ -175,6 +180,7 @@ class Configuration:
                 relative_tolerance=sim_options.rtol,
                 min_step=sim_options.min_minor_step_size,
                 max_step=sim_options.max_minor_step_size,
+                max_checkpoints=sim_options.max_checkpoints,
             ),
             sample_time=sample_time,
             stop_time=stop_time,
@@ -202,7 +208,7 @@ class Subdiagrams:
 @dataclasses.dataclass
 class StateMachineState:
     name: str = None
-    uuid: str = None
+    uuid: UUID = None
     exit_priority_list: list[str] = None
     uiprops: Optional[dict] = None
 
@@ -210,7 +216,7 @@ class StateMachineState:
 @dataclass_json
 @dataclasses.dataclass
 class StateMachineTransition:
-    uuid: str = None
+    uuid: UUID = None
     guard: str = None
     actions: list[str] = None
     destNodeId: str = None  # pylint: disable=invalid-name
@@ -232,14 +238,14 @@ class StateMachineEntryPoint:
 @dataclass_json
 @dataclasses.dataclass
 class StateMachine:
-    uuid: str = None
+    uuid: UUID = None
     links: list[StateMachineTransition] = None
     nodes: list[StateMachineState] = None
     entry_point: StateMachineEntryPoint = None
 
 
 @dataclasses.dataclass
-class Model(DataClassJsonMixin):  # explicit inheritance makes pylint happy
+class Model(DataClassJsonMixin, ToApiMixin):  # explicit inheritance makes pylint happy
     # intended to load model.json and submodel-uuid.ver.json
     diagram: Diagram
     subdiagrams: Subdiagrams = dataclasses.field(
@@ -257,7 +263,7 @@ class Model(DataClassJsonMixin):  # explicit inheritance makes pylint happy
     )
 
     kind: Optional[str] = "Model"
-    uuid: Optional[str] = dataclasses.field(default_factory=lambda: str(uuid4()))
+    uuid: Optional[UUID] = dataclasses.field(default_factory=lambda: str(uuid4()))
     name: Optional[str] = dataclasses.field(default_factory=lambda: "root")
     version: Optional[int] = 1  # used by models
     edit_id: Optional[str] = None  # used by ref submodels

@@ -31,6 +31,7 @@ import collimator
 from collimator import library
 from collimator.backend import numpy_api as cnp
 from collimator.framework import Parameter
+from collimator.testing import set_backend
 
 
 float_dtypes = [
@@ -135,8 +136,6 @@ class CurrentDraw(library.SourceBlock):
 @pytest.mark.minimal
 class TestBatteryCell:
     def test_battery_cell(self, plot=False):
-        # collimator.set_backend("numpy")
-
         builder = collimator.DiagramBuilder()
         current = builder.add(CurrentDraw())
         battery_cell = builder.add(library.BatteryCell())
@@ -512,7 +511,7 @@ class TestIntegrator:
         dim1 = 2
         st_shape = (dim0, dim1)
         dim2 = dim0 * dim1
-        cnp.set_backend(backend)
+        set_backend(backend)
         x0 = cnp.arange(dim2, dtype=np.float64).reshape(st_shape)
         builder = collimator.DiagramBuilder()
         int_ = builder.add(library.Integrator(x0, name="int_"))

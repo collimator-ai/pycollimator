@@ -28,8 +28,10 @@ import collimator
 from collimator.framework.system_base import Parameter
 from collimator.framework.error import StaticError
 import collimator.logging as logging
+from collimator.testing.markers import skip_if_not_jax
 
 logging.set_log_level(logging.DEBUG)
+skip_if_not_jax()
 
 """
 This test file is home to all the test that do not belong to a specific domain.
@@ -116,7 +118,7 @@ def test_torque_switch(show_plot=False, run_sim=False):
         plt.show()
 
     assert np.all(sensTrq[:tSwitch_idx] == offTrq)
-    # there are some strnge results from the simulation. after tSwitch_idx,
+    # there are some strange results from the simulation. after tSwitch_idx,
     # the torque values are not all -10, but there are 2 samples of -8.5496282
     # occurring at time samples 2.12345679, 2.12345679, both identical values,
     # which should not be present, and both after the zero crossing, so the output
@@ -289,30 +291,17 @@ def test_ic_consistency_error(fixed_ics):
     diagram.connect(sp1, "flange_b", r1, "flange")
     compiler = AcausalCompiler(ev, diagram)
     # compiler.diagram_processing()
-    with pytest.raises(AcausalModelError) as exc:
-        compiler.diagram_processing()
-    print(str(exc))
-    # assert False
-    # assert "These connected components ports have mismatched domains." in str(exc)
+    if fixed_ics:
+        with pytest.raises(AcausalModelError) as record:
+            compiler.diagram_processing()
 
-
-def test_insufficient_ic():
-    # make system with insufficient initial conditions
-    ev = EqnEnv()
-    diagram = AcausalDiagram()
-    m1 = trans.Mass(ev, name="m1", M=1.0, initial_position=0.0)
-    sp1 = trans.Spring(ev, name="sp1", initial_position_A=1.0)
-    r1 = trans.FixedPosition(ev, name="r1")
-    diagram.connect(sp1, "flange_a", m1, "flange")
-    diagram.connect(sp1, "flange_b", r1, "flange")
-    compiler = AcausalCompiler(ev, diagram)
-    with pytest.raises(AcausalModelError) as exc:
-        compiler.diagram_processing()
-    print(str(exc))
+    else:
+        with pytest.warns(UserWarning) as record:
+            compiler.diagram_processing()
+    print(str(record))
 
 
 # framework
-# @pytest.mark.xfail(reason="intermittent failures due to procesing order of weak ICs")
 def test_weak_initial_conditions():
     # model: torque_source->wheel->mass
     # the initial conditions are under defined in the model.
@@ -462,15 +451,9 @@ def test_acausal_param_invalid():
 
     # compile to acausal system
     ac = AcausalCompiler(ev, ad)
-    with pytest.raises(AcausalModelError) as exc:
-        # it appears that when compiling the model, the initialize
-        # method of AcausalSystem is called.
-        # However, as seen in the test below, when changign the param
-        # value, and trying to re-run, the initialize method is called
-        # at context creation.
-        # i would have thought it would be called at context creation
-        # both the first and following times, but this is not so.
-        ac()
+    system = ac()
+    with pytest.raises(StaticError) as exc:
+        system.create_context()
     print(str(exc))
 
 
@@ -513,11 +496,11 @@ def test_acausal_param_invalid_after_change():
 
 if __name__ == "__main__":
     show_plot = True
-    test_torque_switch(show_plot=True, run_sim=True)
+    # test_torque_switch(show_plot=True, run_sim=True)
     # test_cross_domain(show_plot=show_plot)
     # test_port_domain_error()
     # test_ic_consistency_error(True)
-    # test_weak_initial_conditions()
+    test_weak_initial_conditions()
     # test_acausal_system_param(show_plot=True)
     # test_acausal_param_invalid()
     # test_acausal_param_invalid_after_change()

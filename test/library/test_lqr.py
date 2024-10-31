@@ -30,11 +30,13 @@ from collimator.library import (
     DiscreteTimeLinearQuadraticRegulator,
     FiniteHorizonLinearQuadraticRegulator,
 )
+from collimator.testing import requires_jax
 
 # Define a global variable for absolute tolerance
 ATOL = 1e-4
 
 
+@requires_jax()
 def test_lqr_continuous_time():
     config = {"m": 1.0, "I_B": 1.0, "r": 0.5, "g": 9.81}
 
@@ -95,6 +97,7 @@ def test_lqr_continuous_time():
     assert jnp.allclose(results.outputs["x"][-1], x_eq, atol=ATOL)
 
 
+@requires_jax()
 def test_lqr_discrete_time():
     config = {"m": 1.0, "I_B": 1.0, "r": 0.5, "g": 9.81}
 
@@ -172,6 +175,7 @@ def test_lqr_discrete_time():
     assert jnp.allclose(results.outputs["x"][-1], x_eq, atol=ATOL)
 
 
+@requires_jax()
 def test_lqr_finite_horizon_continuous_time():
     config = {"m": 1.0, "I_B": 1.0, "r": 0.5, "g": 9.81}
 

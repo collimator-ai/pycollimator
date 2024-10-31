@@ -96,6 +96,8 @@ class TestComparator:
 
         with pytest.raises(BlockParameterError) as e:
             builder.add(library.Comparator(operator="="))
+            diagram = builder.build()
+            diagram.create_context()
         # Success! The test failed as expected.
         print(e)
         assert "Valid options: >,>=,<,<=,==,!=" in str(e)
@@ -142,6 +144,8 @@ class TestDeadZone:
 
         with pytest.raises(BlockParameterError) as e:
             builder.add(library.DeadZone(half_range=-1.0, name="DeadZone"))
+            diagram = builder.build()
+            diagram.create_context()
         # Success! The test failed as expected.
         print(e)
         assert (
@@ -256,8 +260,11 @@ class TestMinMax:
         assert np.allclose(r.outputs["min3"], min3_sol)
 
     def test_invalid_input(self):
+        builder = collimator.DiagramBuilder()
         with pytest.raises(BlockParameterError) as e:
-            library.MinMax(n_in=2, operator="mini")
+            builder.add(library.MinMax(n_in=2, operator="mini"))
+            diagram = builder.build()
+            diagram.create_context()
         # Success! The test failed as expected.
         print(e)
         assert "Valid options: max, min" in str(e)

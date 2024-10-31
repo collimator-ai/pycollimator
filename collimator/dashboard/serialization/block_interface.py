@@ -10,6 +10,7 @@
 # Affero General Public License along with this program. If not, see
 # <https://www.gnu.org/licenses/>.
 
+import ast
 import importlib
 from importlib.util import find_spec as try_import
 import inspect
@@ -17,11 +18,17 @@ from types import MappingProxyType
 
 import numpy as np
 
-from collimator import library
+from collimator import Parameter, library, LeafSystem
 from collimator.dashboard.serialization import model_json
 import collimator.library.state_machine as sm_lib
 from collimator.logging import logger
-from collimator.experimental import electrical, rotational, translational, thermal
+from collimator.experimental import (
+    electrical,
+    hydraulic,
+    rotational,
+    translational,
+    thermal,
+)
 
 # The ClassNameBlock functions are thin layers between a serialized JSON
 # description of the block and its actual implementation in Wildcat. In
@@ -56,11 +63,22 @@ def PythonScriptBlock(
         "ui_id": kwargs.pop("ui_id", None),
     }
 
-    block_cls = (
-        library.CustomJaxBlock if accelerate_with_jax else library.CustomPythonBlock
-    )
+    if accelerate_with_jax:
+        return _wrap(library.CustomJaxBlock)(
+            inputs=inputs_,
+            outputs=outputs_,
+            dt=discrete_interval if dt is None else dt,
+            init_script=init_script,
+            user_statements=user_statements,
+            finalize_script=finalize_script,
+            accelerate_with_jax=accelerate_with_jax,
+            time_mode=block_spec.time_mode,
+            dynamic_parameters=kwargs,
+            **common_kwargs,
+        )
 
-    return _wrap(block_cls)(
+    # not traceable so extra parameters should be static
+    return _wrap(library.CustomPythonBlock)(
         inputs=inputs_,
         outputs=outputs_,
         dt=discrete_interval if dt is None else dt,
@@ -69,7 +87,7 @@ def PythonScriptBlock(
         finalize_script=finalize_script,
         accelerate_with_jax=accelerate_with_jax,
         time_mode=block_spec.time_mode,
-        parameters=kwargs,
+        static_parameters=kwargs,
         **common_kwargs,
     )
 
@@ -476,12 +494,16 @@ def UnscentedKalmanFilterBlock(discrete_interval, **kwargs):
         instance_name="ct_plant_for_ukf",
     )
 
+    # NOTE: we unwrap the parameters inside the lambda in order to try making
+    # it possible to optimize or sweep over (ensemble sims), but this is not
+    # tested yet. There are likely other challenges.
+
     ukf = _wrap(library.UnscentedKalmanFilter.for_continuous_plant)(
         plant=plant,
         dt=dt,
-        G_func=lambda t: G,
-        Q_func=lambda t: Q,
-        R_func=lambda t: R,
+        G_func=lambda t: Parameter.unwrap(G),
+        Q_func=lambda t: Parameter.unwrap(Q),
+        R_func=lambda t: Parameter.unwrap(R),
         x_hat_0=x_hat_0,
         P_hat_0=P_hat_0,
         discretization_method=discretization_method,
@@ -521,9 +543,9 @@ def ExtendedKalmanFilterBlock(discrete_interval, **kwargs):
     ekf = _wrap(library.ExtendedKalmanFilter.for_continuous_plant)(
         plant=plant,
         dt=dt,
-        G_func=lambda t: G,
-        Q_func=lambda t: Q,
-        R_func=lambda t: R,
+        G_func=lambda t: Parameter.unwrap(G),
+        Q_func=lambda t: Parameter.unwrap(Q),
+        R_func=lambda t: Parameter.unwrap(R),
         x_hat_0=x_hat_0,
         P_hat_0=P_hat_0,
         discretization_method=discretization_method,
@@ -569,44 +591,166 @@ def PyTwinBlock(discrete_interval, **kwargs):
     )
 
 
-def _create_partial_transitions(data: model_json.StateMachineTransition):
-    return sm_lib.StateMachineTransition(guard=data.guard, actions=data.actions)
+def _contains_bool_ops(source_code: str):
+    try:
+        # Parse the source code into an AST
+        tree = ast.parse(source_code)
+
+        # Define a visitor class to traverse the AST
+        class BoolOpVisitor(ast.NodeVisitor):
+            def __init__(self):
+                self.found = False
+
+            def visit_BoolOp(self, node):
+                if isinstance(node.op, (ast.And, ast.Or)):
+                    self.found = True
+                # Continue traversing
+                self.generic_visit(node)
+
+            def visit_UnaryOp(self, node):
+                if isinstance(node.op, ast.Not):
+                    self.found = True
+                # Continue traversing
+                self.generic_visit(node)
+
+        # Create an instance of the visitor and traverse the AST
+        visitor = BoolOpVisitor()
+        visitor.visit(tree)
+
+        return visitor.found
+
+    except SyntaxError as e:
+        print(f"SyntaxError while parsing the source code: {e}")
+        return False
+
+
+def _extract_assigned_vars(code_str):
+    # Parse the code string into an AST (Abstract Syntax Tree)
+    tree = ast.parse(code_str)
+
+    # List to hold the names of the variables assigned
+    assigned_vars = []
+
+    # Walk through the nodes of the AST and find assignments
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            # For each target in the assignment, collect its id (variable name)
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assigned_vars.append(target.id)
+
+    return set(assigned_vars)
+
+
+def _create_action(registry, action, input_names, output_names):
+    # get outputs assigned in this action
+    assigned_vars = _extract_assigned_vars(action)
+    filtered_output_names = [
+        output for output in output_names if output in assigned_vars
+    ]
+
+    return_str = [f'"{output}": {output}' for output in filtered_output_names]
+    return_str = ", ".join(return_str)
+    fname = "__sm_action__"
+    args = ", ".join(input_names + output_names)
+    action = action.strip()
+    if action.endswith(";"):
+        action = action[:-1]
+    func_string = f"def {fname}({args}): {action}; return {{ {return_str} }}"
+    env = {**globals()}
+    # NOTE: this is executed in the sandbox so it's safe
+    exec(func_string, env)
+    return registry.register_action(eval(fname, env))
+
+
+def _create_partial_transitions(
+    registry: sm_lib.StateMachineRegistry,
+    data: model_json.StateMachineTransition,
+    input_names: list[str],
+    output_names: list[str],
+    dst: int,
+    warn_bool_ops: bool,
+):
+    inputs = ", ".join(input_names)
+    outputs = ", ".join(output_names)
+    # NOTE: this is executed in the sandbox so it's safe
+    guard = eval(f"lambda {inputs}, {outputs}: {data.guard}")
+    guard_id = registry.register_guard(guard)
+
+    if warn_bool_ops and _contains_bool_ops(data.guard):
+        logger.warning(
+            "Boolean operators detected in guard condition: '%s'. "
+            "Use bitwise operators when accelerate_with_jax=True.",
+            data.guard,
+        )
+
+    action_ids = []
+    for action in data.actions:
+        action_ids.append(_create_action(registry, action, input_names, output_names))
+        if warn_bool_ops and _contains_bool_ops(action):
+            logger.warning(
+                "Boolean operators detected in action: '%s'. "
+                "Use bitwise operators when accelerate_with_jax=True.",
+                action,
+            )
+
+    return sm_lib.StateMachineTransition(
+        guard_id=guard_id, action_ids=action_ids, dst=dst
+    )
 
 
 # function for 'loaded json dataclasses' -> 'used in block dataclasses'
-def _create_state_machine_data(load_sm: model_json.StateMachine):
+def _create_state_machine_data(
+    load_sm: model_json.StateMachine,
+    input_names: list[str],
+    output_names: list[str],
+    warn_bool_ops: bool,
+):
     # process the state machine diagram
     # first enumerate the states with integers since we need a type that
     # can be stored in a wildcat state (i.e. not string)
     states_lookup = {node.uuid: idx for idx, node in enumerate(load_sm.nodes)}
     transitions_lookup = {trns.uuid: trns for trns in load_sm.links}
 
+    registry = sm_lib.StateMachineRegistry()
+
     # create the simplified state machine rep.
     states = {}
-    intial_state = None
-    inital_actions = load_sm.entry_point.actions
+    initial_state = None
+    initial_actions = [
+        _create_action(registry, action, input_names, output_names)
+        for action in load_sm.entry_point.actions
+    ]
     for node in load_sm.nodes:
         idx = states_lookup[node.uuid]
         node_uuid = node.uuid
+
         transitions = []
+
+        if node_uuid == load_sm.entry_point.dest_id:
+            if initial_state is not None:
+                raise ValueError("sm cannot have more that one entry point")
+            initial_state = idx
+
         for exit_trsn_uuid in node.exit_priority_list:
             load_trns = transitions_lookup[exit_trsn_uuid]
-            transition = _create_partial_transitions(load_trns)
-            transition.dst = states_lookup[load_trns.destNodeId]
+            transition = _create_partial_transitions(
+                registry,
+                load_trns,
+                input_names,
+                output_names,
+                states_lookup[load_trns.destNodeId],
+                warn_bool_ops,
+            )
             transitions.append(transition)
-
         state = sm_lib.StateMachineState(name=node.name, transitions=transitions)
         states[idx] = state
 
-        if node_uuid == load_sm.entry_point.dest_id:
-            if intial_state is not None:
-                raise ValueError("sm cannot have more that one entry point")
-            intial_state = idx
-
     return sm_lib.StateMachineData(
+        registry=registry,
         states=states,
-        intial_state=intial_state,
-        inital_actions=inital_actions,
+        initial_state=initial_state,
+        initial_actions=initial_actions,
     )
 
 
@@ -617,8 +761,11 @@ def StateMachineBlock(
     state_machine_diagram: model_json.StateMachine = None,
     **kwargs,
 ):
-    sm_data = _create_state_machine_data(state_machine_diagram)
     inputs_, outputs_ = _process_user_define_ports(block_spec)
+    accelerate_with_jax = kwargs.get("accelerate_with_jax", False)
+    sm_data = _create_state_machine_data(
+        state_machine_diagram, inputs_, outputs_, accelerate_with_jax
+    )
 
     return _wrap(library.StateMachine)(
         sm_data=sm_data,
@@ -763,6 +910,62 @@ def VideoSinkBlock(
     return _wrap(library.VideoSink)(dt=dt, file_name=file_name, **kwargs)
 
 
+# model json parsing implicitly casts poly_order and max_iter to float but
+# they are expected to be integers
+def SindyBlock(
+    block_spec: model_json.Node,
+    poly_order: float = None,
+    max_iter: float = None,
+    **kwargs,
+):
+    if poly_order is not None:
+        kwargs["poly_order"] = int(poly_order)
+    if max_iter is not None:
+        kwargs["max_iter"] = int(max_iter)
+
+    return _wrap(library.Sindy)(**kwargs)
+
+
+def CustomLeafSystemBlock(
+    block_spec: model_json.Node,
+    inline: bool = False,
+    source_code: str = None,
+    class_name: str = None,
+    file_path: str = None,
+    **kwargs,
+):
+    if not inline:
+        if not file_path or not class_name:
+            raise ValueError(
+                "CustomLeafSystem block requires a file path and class name"
+            )
+        if not file_path.endswith(".py"):
+            raise ValueError("CustomLeafSystem file_path must have a .py extension")
+        file_path = file_path[:-3]
+
+        module_path = file_path.replace("/", ".")
+        module = importlib.import_module(module_path)
+        cls = getattr(module, class_name)
+    else:
+        if class_name in globals():
+            raise ValueError(f"class name '{class_name}' is reserved")
+
+        _globals = {**globals()}
+        exec(source_code, _globals, _globals)
+
+        if class_name not in _globals:
+            raise ValueError(f"could not find '{class_name}'")
+
+        cls = _globals.get(class_name)
+
+    if not issubclass(cls, LeafSystem):
+        raise ValueError(f"{class_name} must inherit LeafSystem")
+
+    return _wrap(cls)(**kwargs)
+
+
+# FIXME: why do we have this? And is it actually necessary? Bools should be evaluated
+# in the param evaluation stage, not here. Bools should not be of type string. WC-448
 def _convert_bools(params: dict):
     bools = {
         "true": True,
@@ -792,6 +995,10 @@ def _filter_init_kwargs(cls: type, kwargs: dict):
             unsupported_kwargs.append(arg_name)
         else:
             new_kwargs[arg_name] = kwargs[arg_name]
+
+    # NOTE: If you see this warnings followed by an error with the same parameter
+    # names as listed here, then the proper fix is to explicitly add the parameters
+    # to the function signature, not to modify _filter_init_kwargs.
 
     if len(unsupported_kwargs) > 0:
         logger.warning(
@@ -841,6 +1048,7 @@ _fcn_map = MappingProxyType(
         # bus selector
         "core.Chirp": _wrap(library.Chirp),
         "core.Clock": _wrap(library.Clock),
+        "core.CustomLeafSystem": CustomLeafSystemBlock,
         "core.DiscreteClock": _wrap_discrete(library.DiscreteClock),
         "core.Comparator": _wrap(library.Comparator),
         # conditional
@@ -922,7 +1130,7 @@ _fcn_map = MappingProxyType(
         "core.ScalarBroadcast": _wrap(library.ScalarBroadcast),
         "core.SignalDatatypeConversion": _wrap(library.SignalDatatypeConversion),
         "core.SineWave": _wrap(library.Sine),
-        "core.SINDy": _wrap(library.Sindy),
+        "core.SINDy": SindyBlock,
         "core.Slice": _wrap(library.Slice),
         "core.SquareRoot": _wrap(library.SquareRoot),
         "core.Stack": StackBlock,
@@ -942,46 +1150,59 @@ _fcn_map = MappingProxyType(
         # Acausal electrical blocks
         "acausal.electrical.Battery": _wrap(electrical.Battery),
         "acausal.electrical.Capacitor": _wrap(electrical.Capacitor),
-        "acausal.electrical.Ground": _wrap(electrical.Ground),
-        "acausal.electrical.Resistor": _wrap(electrical.Resistor),
-        "acausal.electrical.Inductor": _wrap(electrical.Inductor),
         "acausal.electrical.CurrentSensor": _wrap(electrical.CurrentSensor),
+        "acausal.electrical.CurrentSource": _wrap(electrical.CurrentSource),
+        "acausal.electrical.Ground": _wrap(electrical.Ground),
+        "acausal.electrical.IdealDiode": _wrap(electrical.IdealDiode),
+        "acausal.electrical.IdealMotor": _wrap(electrical.IdealMotor),
+        "acausal.electrical.Inductor": _wrap(electrical.Inductor),
+        "acausal.electrical.IntegratedMotor": _wrap(electrical.IntegratedMotor),
+        "acausal.electrical.Resistor": _wrap(electrical.Resistor),
         "acausal.electrical.VoltageSensor": _wrap(electrical.VoltageSensor),
         "acausal.electrical.VoltageSource": _wrap(electrical.VoltageSource),
-        "acausal.electrical.CurrentSource": _wrap(electrical.CurrentSource),
-        "acausal.electrical.IdealMotor": _wrap(electrical.IdealMotor),
-        "acausal.electrical.BLDC": _wrap(electrical.BLDC),
+        # Acausal hydraulic blocks
+        "acausal.hydraulic.Accumulator": _wrap(hydraulic.Accumulator),
+        "acausal.hydraulic.HydraulicActuatorLinear": _wrap(
+            hydraulic.HydraulicActuatorLinear
+        ),
+        "acausal.hydraulic.HydraulicProperties": _wrap(hydraulic.HydraulicProperties),
+        "acausal.hydraulic.MassflowSensor": _wrap(hydraulic.MassflowSensor),
+        "acausal.hydraulic.Pipe": _wrap(hydraulic.Pipe),
+        "acausal.hydraulic.PressureSensor": _wrap(hydraulic.PressureSensor),
+        "acausal.hydraulic.PressureSource": _wrap(hydraulic.PressureSource),
+        "acausal.hydraulic.Pump": _wrap(hydraulic.Pump),
         # Acausal rotational blocks
-        "acausal.rotational.TorqueSource": _wrap(rotational.TorqueSource),
-        "acausal.rotational.SpeedSource": _wrap(rotational.SpeedSource),
         "acausal.rotational.Damper": _wrap(rotational.Damper),
+        "acausal.rotational.Engine": _wrap(rotational.Engine),
         "acausal.rotational.FixedAngle": _wrap(rotational.FixedAngle),
         "acausal.rotational.Friction": _wrap(rotational.Friction),
-        "acausal.rotational.IdealGear": _wrap(rotational.IdealGear),
+        "acausal.rotational.Gear": _wrap(rotational.Gear),
         "acausal.rotational.IdealPlanetary": _wrap(rotational.IdealPlanetary),
         "acausal.rotational.IdealWheel": _wrap(rotational.IdealWheel),
         "acausal.rotational.Inertia": _wrap(rotational.Inertia),
+        "acausal.rotational.MotionSensor": _wrap(rotational.MotionSensor),
+        "acausal.rotational.SpeedSource": _wrap(rotational.SpeedSource),
         "acausal.rotational.Spring": _wrap(rotational.Spring),
         "acausal.rotational.TorqueSensor": _wrap(rotational.TorqueSensor),
-        "acausal.rotational.MotionSensor": _wrap(rotational.MotionSensor),
-        # Acausal translational blocks
-        "acausal.translational.ForceSource": _wrap(translational.ForceSource),
-        "acausal.translational.SpeedSource": _wrap(translational.SpeedSource),
-        "acausal.translational.Damper": _wrap(translational.Damper),
-        "acausal.translational.FixedPosition": _wrap(translational.FixedPosition),
-        "acausal.translational.Friction": _wrap(translational.Friction),
-        "acausal.translational.Mass": _wrap(translational.Mass),
-        "acausal.translational.Spring": _wrap(translational.Spring),
-        "acausal.translational.ForceSensor": _wrap(translational.ForceSensor),
-        "acausal.translational.MotionSensor": _wrap(translational.MotionSensor),
+        "acausal.rotational.TorqueSource": _wrap(rotational.TorqueSource),
         # Acausal thermal blocks
         "acausal.thermal.HeatCapacitor": _wrap(thermal.HeatCapacitor),
         "acausal.thermal.HeatflowSensor": _wrap(thermal.HeatflowSensor),
         "acausal.thermal.HeatflowSource": _wrap(thermal.HeatflowSource),
+        "acausal.thermal.Insulator": _wrap(thermal.Insulator),
+        "acausal.thermal.Radiation": _wrap(thermal.Radiation),
         "acausal.thermal.TemperatureSensor": _wrap(thermal.TemperatureSensor),
         "acausal.thermal.TemperatureSource": _wrap(thermal.TemperatureSource),
-        "acausal.thermal.ThermalInsulator": _wrap(thermal.ThermalInsulator),
-        "acausal.thermal.ThermalRadiation": _wrap(thermal.ThermalRadiation),
+        # Acausal translational blocks
+        "acausal.translational.Damper": _wrap(translational.Damper),
+        "acausal.translational.FixedPosition": _wrap(translational.FixedPosition),
+        "acausal.translational.ForceSensor": _wrap(translational.ForceSensor),
+        "acausal.translational.ForceSource": _wrap(translational.ForceSource),
+        "acausal.translational.Friction": _wrap(translational.Friction),
+        "acausal.translational.Mass": _wrap(translational.Mass),
+        "acausal.translational.MotionSensor": _wrap(translational.MotionSensor),
+        "acausal.translational.SpeedSource": _wrap(translational.SpeedSource),
+        "acausal.translational.Spring": _wrap(translational.Spring),
         # Quanser blocks
         "quanser.QubeServoModel": _wrap(library.QubeServoModel),
         "quanser.QuanserHAL": _wrap_discrete(library.QuanserHAL),

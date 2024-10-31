@@ -28,7 +28,7 @@ from collimator.framework.error import (
     BlockRuntimeError,
     StaticError,
 )
-from collimator.framework.system_base import parameters
+from collimator.framework import parameters
 from collimator.lazy_loader import LazyLoader
 from collimator.backend import io_callback, numpy_api as cnp
 from collimator.backend.typing import Array
@@ -129,7 +129,7 @@ class VideoSink(LeafSystem):
 
         frame_id = self.frame_id
         self.frame_id += 1
-        return frame_id
+        return cnp.intx(frame_id)
 
 
 class VideoSource(LeafSystem):
@@ -205,14 +205,14 @@ class VideoSource(LeafSystem):
         if not self.repeat:
 
             def _stopped_cb(time, state, *inputs, **parameters) -> Array:
-                return io_callback(self._stopped_cb, cnp.bool(False))
+                return io_callback(self._stopped_cb, cnp.bool_(False))
 
             self.declare_output_port(
                 _stopped_cb,
                 name="stopped",
                 period=dt,
                 offset=dt,
-                default_value=cnp.bool(False),
+                default_value=cnp.bool_(False),
                 requires_inputs=False,
             )
 
@@ -257,7 +257,7 @@ class VideoSource(LeafSystem):
         return frame
 
     def _frame_id_cb(self) -> Array:
-        return self.frame_id
+        return cnp.intx(self.frame_id)
 
     def _stopped_cb(self) -> Array:
         return self.reached_end

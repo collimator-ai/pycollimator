@@ -16,7 +16,7 @@ from ..framework import LeafSystem
 
 class LotkaVolterra(LeafSystem):
     def __init__(self, x0=[10.0, 10.0], alpha=1.1, beta=0.4, gamma=0.4, delta=0.1):
-        super().__init__(self)
+        super().__init__()
         self.declare_dynamic_parameter("alpha", alpha)
         self.declare_dynamic_parameter("beta", beta)
         self.declare_dynamic_parameter("gamma", gamma)

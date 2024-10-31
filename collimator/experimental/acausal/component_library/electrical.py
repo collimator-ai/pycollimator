@@ -112,7 +112,7 @@ class Battery(ElecTwoPin):
             then their values are lookup tables of SOC, and SOC_v must be provided.
             See equations above for definitions of symbols.
         SOC_v (array):
-            SOC break point for parameter looup tables. See above.
+            SOC break point for parameter lookup tables. See above.
         initial_soc (float):
             The initial value of the SOC state.
         iniital_soc_fixed (bool):
@@ -167,7 +167,7 @@ class Battery(ElecTwoPin):
             self.name,
             kind=SymKind.var,
             ic=0.0,  # assign string IC of 0.0
-            ic_fixed=True,
+            ic_fixed=False,
         )
         dUp = self.declare_symbol(
             ev,
@@ -176,7 +176,7 @@ class Battery(ElecTwoPin):
             kind=SymKind.var,
             int_sym=Up_,
             ic=0.0,  # assign string IC of 0.0
-            ic_fixed=True,
+            ic_fixed=False,
         )
         Up_.der_sym = dUp
 
@@ -269,285 +269,6 @@ class Battery(ElecTwoPin):
         if enable_ocv_port:
             ocv = self.declare_symbol(ev, "ocv", self.name, kind=SymKind.outp)
             self.declare_equation(sp.Eq(ocv.s, OCV_lut.s), kind=EqnKind.outp)
-
-
-class BLDC(ElecTwoPin):
-    """
-    Brushless Direct Current Motor (BLDC).
-    Combined Motor-Inverter model for a 4 Quadrant BLDC motor. The governing equations:
-        1. trq = trq_req_norm * peaktrq_lut(abs(speed))
-        2. mech_pwr = trq * speed
-        3. if mech_pwr >= 0:
-                elec_pwr = mech_pwr / eff
-           else:
-                elec_pwr = mech_pwr * eff
-        4. I = elec_pwr/V
-        5. trq = J*alpha
-        6. eff = eff_lut(abs(speed),abs(trq))
-    optionally:
-        6. heat = abs(elec_pwr - mech_pwr)
-
-    This component requires the following lookup tables:
-        peaktrq_lut: 1D lookup from speed[0:inf] to trq[0:inf]
-        eff_lut: 2D lookup from (speed[0:inf],trq[0:inf]) to eff[0:1]
-    where [a:b] means the range of the variable.
-    The peaktrq_lut can be prvided as 2 vectors, or as 3 scalar parameters.
-    The eff_lut can be provied as 2 vectors and a 2D matrix, or a single scalar.
-
-    Inputs:
-        trq_req: causal signal for torque request from external controller.
-
-    From the rotational domain, the component is like a torque source, from the
-    electrical domain, the component is like a current source. And optionally, from
-    the thermal domain, the component is like a heat source.
-
-    Note on sign convention.
-        - positive electrical power flows into the component
-        - positive mechanical power flows out of the component
-
-    """
-
-    def __init__(
-        self,
-        ev,
-        name=None,
-        J=0.05,
-        peaktrq_spd=None,
-        peaktrq_trq=None,
-        peak_trq=None,
-        peak_pwr=None,
-        peak_spd=None,
-        eff_spd=None,
-        eff_trq=None,
-        eff_eff=None,
-        eff_k=None,
-        enable_heat_port=False,
-    ):
-        self.name = self.__class__.__name__ if name is None else name
-        super().__init__(ev, self.name, p1="pos", p2="neg")
-
-        # process user provided parameters
-        self.peaktrq_spd, self.peaktrq_trq = self._process_peak_trq(
-            self.name,
-            peaktrq_spd,
-            peaktrq_trq,
-            peak_trq,
-            peak_pwr,
-            peak_spd,
-        )
-        self.eff_k = self._process_eff(eff_spd, eff_trq, eff_eff, eff_k)
-        # below is for testing the 2D LUT feature witho
-        # eff_spd = cnp.linspace(0, cnp.max(self.peaktrq_spd), 20)
-        # eff_trq = cnp.linspace(0, cnp.max(self.peaktrq_trq), 20)
-        # eff_eff = cnp.ones((len(eff_spd), len(eff_trq))) * self.eff_k
-        # self.eff_k = None
-
-        # declare component ports
-        trq, ang, w, alpha = self.declare_rotational_port(
-            ev,
-            "shaft",
-            w_ic=0.0,
-            ang_ic=0.0,
-        )
-        self.port_idx_to_name = {-2: "pos", -3: "neg", 1: "shaft"}
-
-        # create component symbols
-        J = self.declare_symbol(
-            ev,
-            "J",
-            self.name,
-            kind=SymKind.param,
-            val=J,
-            validator=lambda J: J > 0.0,
-            invalid_msg=f"Component {self.__class__.__name__} {self.name} must have J>0",
-        )
-        trq_lut = self.declare_1D_lookup_table(
-            ev,
-            sp.Abs(w.s),
-            "peaktrq_spd",
-            self.peaktrq_spd,
-            "peaktrq_trq",
-            self.peaktrq_trq,
-            "trq_lut",
-        )
-        if self.eff_k is None:
-            eff_lut = self.declare_2D_lookup_table(
-                ev,
-                sp.Abs(w.s),
-                "eff_spd",
-                eff_spd,
-                sp.Abs(trq.s),
-                "eff_trq",
-                eff_trq,
-                "eff_eff",
-                eff_eff,
-                "eff_lut",
-            )
-        else:
-            eff_lut = self.declare_symbol(
-                ev,
-                "eff_k",
-                self.name,
-                kind=SymKind.param,
-                val=self.eff_k,
-                validator=lambda eff_k: eff_k > 0.5,
-                invalid_msg=f"Component {self.__class__.__name__} {self.name} must have eff_k>0.5",
-            )
-        mech_pwr = self.declare_symbol(ev, "mech_pwr", self.name, kind=SymKind.var)
-        trq_req_norm = self.declare_symbol(
-            ev, "trq_req_norm", self.name, kind=SymKind.inp
-        )
-        elec_pwr = self.declare_conditional(
-            ev,
-            mech_pwr.s >= 0,
-            mech_pwr.s / eff_lut.s,
-            mech_pwr.s * eff_lut.s,
-            "elec_pwr_cond",
-        )  # eqn 3
-
-        self.add_eqs(
-            [
-                sp.Eq(
-                    0, trq.s + trq_req_norm.s * trq_lut.s - J.s * alpha.s
-                ),  # eqn 1 & 5
-                sp.Eq(mech_pwr.s, w.s * -trq.s),  # eqn 2
-                sp.Eq(self.Ip.s, elec_pwr.s / (self.Vp.s - self.Vn.s)),  # eqn 4
-            ]
-        )
-
-        if enable_heat_port:
-            port_name = "heat"
-            T, Q = self.declare_thermal_port(ev, port_name)
-            # NOTE: flow vars are negative for flow going out of the component,
-            # since heat flows out of the resistor, we
-            # need the minus sign on 'Q'.
-            self.add_eqs([sp.Eq(-Q.s, sp.Abs(elec_pwr.s - mech_pwr.s))])
-            self.port_idx_to_name[2] = port_name
-
-    def _process_peak_trq(
-        self,
-        name,
-        peaktrq_spd,
-        peaktrq_trq,
-        peak_trq,
-        peak_pwr,
-        peak_spd,
-    ):
-        if peak_spd is None:
-            peak_spd = 1000
-        if peaktrq_spd is None:
-            peaktrq_spd = cnp.arange(0, peak_spd, 50)
-        if peaktrq_trq is None:
-            if peak_pwr is None:
-                peak_pwr = 100e3  # Watts
-            if peak_trq is None:
-                peak_trq = 200  # Nm
-            peak_trq_v = cnp.ones_like(peaktrq_spd) * peak_trq  # Nm
-            peak_pwrTrq_v = peak_pwr / cnp.maximum(peaktrq_spd, 1.0)  # Nm
-            peaktrq_trq = cnp.minimum(peak_trq_v, peak_pwrTrq_v)
-
-        if peaktrq_trq[-1] != 0.0:
-            # zero torque at peak speed
-            peaktrq_spd = cnp.append(peaktrq_spd, peaktrq_spd[-1] * 1.02)
-            peaktrq_trq = cnp.append(peaktrq_trq, 0.0)
-
-        if len(peaktrq_spd) != len(peaktrq_trq):
-            raise ValueError(
-                f"Component BLDC {self.name} peaktrq_spd and peaktrq_trq must be same length."
-            )
-
-        return peaktrq_spd, peaktrq_trq
-
-    def _process_eff(self, eff_spd, eff_trq, eff_eff, eff_k):
-        eff_params = [eff_spd, eff_trq, eff_eff]
-        if any(eff_params) and not all(eff_params):
-            raise ValueError(
-                f"Component BLDC {self.name} eff_spd, eff_trq and eff_eff must be all defined, or all None."
-            )
-        if None in eff_params:
-            if eff_k is None:
-                eff_k = 0.9
-        else:
-            eff_k = None
-
-        return eff_k
-
-
-class IdealDiode(ElecTwoPin):
-    """
-    FIXME: This component behaves the same regardless of whether using the naive or modelica equations.
-        see test_ideal_diode(). with voltage applied one way (dont know if forward or reverse bias), it
-        doesn't have the behavior expected. with voltage the other way, the simulation seems to hang,
-        maybe poor handling of zeno (see WC-420)?
-    Ideal diode in electrical domain.
-    Similar to the PWL model here: https://en.wikipedia.org/wiki/Diode_modelling#Diode_with_voltage_source_and_current-limiting_resistor
-    The characteristic equations are:
-        1.  if V >= Vknee:
-                R = Ron
-            else:
-                R = Roff
-        2. I = V / R
-
-    Args:
-        Vknee (number):
-            Knee voltage in volts.
-        Ron (number):
-            Resistance in forward bias.
-        Roff (number):
-            Resistance in reverse bias.
-    """
-
-    def __init__(self, ev, name=None, Vknee=0.7, Ron=1e-6, Roff=1e9):
-        self.name = self.__class__.__name__ if name is None else name
-        super().__init__(ev, self.name)
-        Vknee = self.declare_symbol(
-            ev,
-            "Vknee",
-            self.name,
-            kind=SymKind.param,
-            val=Vknee,
-            validator=lambda Vknee: Vknee > 0.0,
-            invalid_msg=f"Component {self.__class__.__name__} {self.name} must have Vknee>0",
-        )
-        Ron = self.declare_symbol(
-            ev,
-            "Ron",
-            self.name,
-            kind=SymKind.param,
-            val=Ron,
-            validator=lambda Ron: Ron > 0.0,
-            invalid_msg=f"Component {self.__class__.__name__} {self.name} must have Ron>0",
-        )
-        Roff = self.declare_symbol(
-            ev,
-            "Roff",
-            self.name,
-            kind=SymKind.param,
-            val=Roff,
-            validator=lambda Roff: Roff > 0.0,
-            invalid_msg=f"Component {self.__class__.__name__} {self.name} must have Roff>0",
-        )
-        # both implememtations below are equivalent I think. Not sure why Modelica does it that way.
-        # the naive attempt
-        # R = self.declare_conditional(ev, self.V.s >= Vknee.s, Ron.s, Roff.s, "R_cond")
-        # self.add_eqs([sp.Eq(self.V.s, self.Ip.s * R.s)])
-
-        # copy modelica attempt. the equations from the modelica component:
-        #   v = p.v - n.v # appears in ElecTwoPin
-        #   0 = p.i + n.i # appears in ElecTwoPin
-        #   i = p.i # we just use Ip.s, which is the equivalent to p.i in modelica
-        #   v = (s*unitCurrent)*(if s < 0 then 1 else Ron) + Vknee
-        #   i = (s*unitVoltage)*(if s < 0 then Goff else 1) + Goff*Vknee
-        # the implementation in collimator:
-        s = self.declare_symbol(ev, "s", self.name, kind=SymKind.var)
-        Vcond = self.declare_conditional(ev, s.s < 0, 1.0, Ron.s, "Vcond")
-        Icond = self.declare_conditional(ev, s.s < 0, 1.0 / Roff.s, 1.0, "Icond")
-        self.add_eqs(
-            [
-                sp.Eq(self.V.s, s.s * Vcond.s + Vknee.s),
-                sp.Eq(self.Ip.s, s.s * Icond.s + Vknee.s / Roff.s),
-            ]
-        )
 
 
 class Diode(ElecTwoPin):
@@ -705,6 +426,74 @@ class Ground(ComponentBase):
         v, i = self.declare_electrical_port(ev, "p")
         self.add_eqs([sp.Eq(0, v.s)])
         self.port_idx_to_name = {-1: "p"}
+
+
+class IdealDiode(ElecTwoPin):
+    """
+    Ideal diode in electrical domain. Similar to Modelica IdealDiode.
+
+    Args:
+        Vknee (number):
+            Knee voltage in volts.
+        Ron (number):
+            Resistance in forward bias.
+        Roff (number):
+            Resistance in reverse bias.
+    """
+
+    def __init__(self, ev, name=None, Vknee=0.7, Ron=1e-6, Roff=1e9):
+        self.name = self.__class__.__name__ if name is None else name
+        super().__init__(ev, self.name)
+        Vknee = self.declare_symbol(
+            ev,
+            "Vknee",
+            self.name,
+            kind=SymKind.param,
+            val=Vknee,
+            validator=lambda Vknee: Vknee > 0.0,
+            invalid_msg=f"Component {self.__class__.__name__} {self.name} must have Vknee>0",
+        )
+        Ron = self.declare_symbol(
+            ev,
+            "Ron",
+            self.name,
+            kind=SymKind.param,
+            val=Ron,
+            validator=lambda Ron: Ron > 0.0,
+            invalid_msg=f"Component {self.__class__.__name__} {self.name} must have Ron>0",
+        )
+        Roff = self.declare_symbol(
+            ev,
+            "Roff",
+            self.name,
+            kind=SymKind.param,
+            val=Roff,
+            validator=lambda Roff: Roff > 0.0,
+            invalid_msg=f"Component {self.__class__.__name__} {self.name} must have Roff>0",
+        )
+        s = self.declare_symbol(ev, "s", self.name, kind=SymKind.var)
+        Vcond = self.declare_conditional(
+            ev,
+            s.s < 0.0,
+            1.0,
+            Ron.s,
+            cond_name="Vcond",
+        )
+
+        Icond = self.declare_conditional(
+            ev,
+            s.s < 0.0,
+            1.0 / Roff.s,
+            1.0,
+            cond_name="Icond",
+        )
+
+        self.add_eqs(
+            [
+                sp.Eq(self.V.s, s.s * Vcond.s + Vknee.s),
+                sp.Eq(self.Ip.s, s.s * Icond.s + Vknee.s / Roff.s),
+            ]
+        )
 
 
 class IdealMotor(ComponentBase):
@@ -880,6 +669,211 @@ class Inductor(ElecTwoPin):
         )
         self.Ip.der_sym = dI
         self.add_eqs([sp.Eq(self.V.s, L.s * dI.s)])
+
+
+class IntegratedMotor(ElecTwoPin):
+    """
+    Brushless Direct Current Motor (BLDC).
+    Combined Motor-Inverter model for a 4 Quadrant BLDC motor. The governing equations:
+        1. trq = trq_req_norm * peaktrq_lut(abs(speed))
+        2. mech_pwr = trq * speed
+        3. if mech_pwr >= 0:
+                elec_pwr = mech_pwr / eff
+           else:
+                elec_pwr = mech_pwr * eff
+        4. I = elec_pwr/V
+        5. trq = J*alpha
+        6. eff = eff_lut(abs(speed),abs(trq))
+    optionally:
+        6. heat = abs(elec_pwr - mech_pwr)
+
+    This component requires the following lookup tables:
+        peaktrq_lut: 1D lookup from speed[0:inf] to trq[0:inf]
+        eff_lut: 2D lookup from (speed[0:inf],trq[0:inf]) to eff[0:1]
+    where [a:b] means the range of the variable.
+    The peaktrq_lut can be prvided as 2 vectors, or as 3 scalar parameters.
+    The eff_lut can be provied as 2 vectors and a 2D matrix, or a single scalar.
+
+    Inputs:
+        trq_req: causal signal for torque request from external controller.
+
+    From the rotational domain, the component is like a torque source, from the
+    electrical domain, the component is like a current source. And optionally, from
+    the thermal domain, the component is like a heat source.
+
+    Note on sign convention.
+        - positive electrical power flows into the component
+        - positive mechanical power flows out of the component
+
+    """
+
+    def __init__(
+        self,
+        ev,
+        name=None,
+        J=0.05,
+        peaktrq_spd=None,
+        peaktrq_trq=None,
+        peak_trq=None,
+        peak_pwr=None,
+        peak_spd=None,
+        eff_spd=None,
+        eff_trq=None,
+        eff_eff=None,
+        eff_k=None,
+        enable_heat_port=False,
+    ):
+        self.name = self.__class__.__name__ if name is None else name
+        super().__init__(ev, self.name, p1="pos", p2="neg")
+
+        # process user provided parameters
+        self.peaktrq_spd, self.peaktrq_trq = self._process_peak_trq(
+            self.name,
+            peaktrq_spd,
+            peaktrq_trq,
+            peak_trq,
+            peak_pwr,
+            peak_spd,
+        )
+        self.eff_k = self._process_eff(eff_spd, eff_trq, eff_eff, eff_k)
+        # below is for testing the 2D LUT feature witho
+        # eff_spd = cnp.linspace(0, cnp.max(self.peaktrq_spd), 20)
+        # eff_trq = cnp.linspace(0, cnp.max(self.peaktrq_trq), 20)
+        # eff_eff = cnp.ones((len(eff_spd), len(eff_trq))) * self.eff_k
+        # self.eff_k = None
+
+        # declare component ports
+        trq, ang, w, alpha = self.declare_rotational_port(
+            ev,
+            "shaft",
+            w_ic=0.0,
+            ang_ic=0.0,
+        )
+        self.port_idx_to_name = {-2: "pos", -3: "neg", 1: "shaft"}
+
+        # create component symbols
+        J = self.declare_symbol(
+            ev,
+            "J",
+            self.name,
+            kind=SymKind.param,
+            val=J,
+            validator=lambda J: J > 0.0,
+            invalid_msg=f"Component {self.__class__.__name__} {self.name} must have J>0",
+        )
+        trq_lut = self.declare_1D_lookup_table(
+            ev,
+            sp.Abs(w.s),
+            "peaktrq_spd",
+            self.peaktrq_spd,
+            "peaktrq_trq",
+            self.peaktrq_trq,
+            "trq_lut",
+        )
+        if self.eff_k is None:
+            eff_lut = self.declare_2D_lookup_table(
+                ev,
+                sp.Abs(w.s),
+                "eff_spd",
+                eff_spd,
+                sp.Abs(trq.s),
+                "eff_trq",
+                eff_trq,
+                "eff_eff",
+                eff_eff,
+                "eff_lut",
+            )
+        else:
+            eff_lut = self.declare_symbol(
+                ev,
+                "eff_k",
+                self.name,
+                kind=SymKind.param,
+                val=self.eff_k,
+                validator=lambda eff_k: eff_k > 0.5,
+                invalid_msg=f"Component {self.__class__.__name__} {self.name} must have eff_k>0.5",
+            )
+        mech_pwr = self.declare_symbol(ev, "mech_pwr", self.name, kind=SymKind.var)
+        trq_req_norm = self.declare_symbol(
+            ev, "trq_req_norm", self.name, kind=SymKind.inp
+        )
+        elec_pwr = self.declare_conditional(
+            ev,
+            mech_pwr.s >= 0,
+            mech_pwr.s / eff_lut.s,
+            mech_pwr.s * eff_lut.s,
+            cond_name="elec_pwr_cond",
+            non_bool_zc_expr=mech_pwr.s,
+        )  # eqn 3
+
+        self.add_eqs(
+            [
+                sp.Eq(
+                    0, trq.s + trq_req_norm.s * trq_lut.s - J.s * alpha.s
+                ),  # eqn 1 & 5
+                sp.Eq(mech_pwr.s, w.s * -trq.s),  # eqn 2
+                sp.Eq(self.Ip.s, elec_pwr.s / (self.Vp.s - self.Vn.s)),  # eqn 4
+            ]
+        )
+
+        if enable_heat_port:
+            port_name = "heat"
+            T, Q = self.declare_thermal_port(ev, port_name)
+            # NOTE: flow vars are negative for flow going out of the component,
+            # since heat flows out of the resistor, we
+            # need the minus sign on 'Q'.
+            self.add_eqs([sp.Eq(-Q.s, sp.Abs(elec_pwr.s - mech_pwr.s))])
+            self.port_idx_to_name[2] = port_name
+
+    def _process_peak_trq(
+        self,
+        name,
+        peaktrq_spd,
+        peaktrq_trq,
+        peak_trq,
+        peak_pwr,
+        peak_spd,
+    ):
+        if peak_spd is None:
+            peak_spd = 1000
+        if peaktrq_spd is None:
+            peaktrq_spd = cnp.arange(0, peak_spd, 50)
+        if peaktrq_trq is None:
+            if peak_pwr is None:
+                peak_pwr = 100e3  # Watts
+            if peak_trq is None:
+                peak_trq = 200  # Nm
+            peak_trq_v = cnp.ones_like(peaktrq_spd) * peak_trq  # Nm
+            peak_pwrTrq_v = peak_pwr / cnp.maximum(peaktrq_spd, 1.0)  # Nm
+            peaktrq_trq = cnp.minimum(peak_trq_v, peak_pwrTrq_v)
+
+        if peaktrq_trq[-1] != 0.0:
+            # zero torque at peak speed
+            peaktrq_spd = cnp.append(peaktrq_spd, peaktrq_spd[-1] * 1.02)
+            peaktrq_trq = cnp.append(peaktrq_trq, 0.0)
+
+        if len(peaktrq_spd) != len(peaktrq_trq):
+            raise ValueError(
+                f"Component BLDC {self.name} peaktrq_spd and peaktrq_trq must be same length."
+            )
+
+        return peaktrq_spd, peaktrq_trq
+
+    def _process_eff(self, eff_spd, eff_trq, eff_eff, eff_k):
+        eff_params = [eff_spd, eff_trq, eff_eff]
+        if any(eff_params) and not all(eff_params):
+            raise ValueError(
+                f"Component BLDC {self.name} eff_spd, eff_trq and eff_eff must be all defined, or all None."
+            )
+        if None in eff_params:
+            # this means the component config models efficiency as constant scalar.
+            if eff_k is None:
+                eff_k = 0.9
+        else:
+            # this mean the component will use the eff_spd, eff_trq, eff_eff 2D lookup table
+            eff_k = None
+
+        return eff_k
 
 
 class Resistor(ElecTwoPin):

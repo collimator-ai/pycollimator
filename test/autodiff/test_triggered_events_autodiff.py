@@ -24,13 +24,12 @@ from collimator.framework.event import IntegerTime
 from collimator.simulation.types import ContinuousIntervalData
 
 from collimator.logging import logger
-
+from collimator import logging
 from collimator.testing import fd_grad
 from collimator.models import BouncingBall as BouncingBall1d
+from collimator.testing.markers import skip_if_not_jax
 
-from collimator import logging
-
-
+skip_if_not_jax()
 logging.set_file_handler("test.log")
 
 pytestmark = pytest.mark.slow
@@ -236,7 +235,7 @@ class TestGuardLocalization:
         def forward(context, x0, tf, tt, a):
             context = context.with_continuous_state(x0)
             context = context.with_parameters(
-                {"a": a, "trigger_time": tt, "trigger_state": jnp.inf}
+                {"a": a, "trigger_time": tt, "trigger_state": jnp.inf},
             )
             sim_state = sim.advance_to(tf, context)
             return sim_state.context.continuous_state
@@ -440,7 +439,7 @@ class TestGuardLocalization:
         def forward(context, x0, tf, xt, xr, a):
             context = context.with_continuous_state(x0)
             context = context.with_parameters(
-                {"a": a, "trigger_state": xt, "reset_state": xr}
+                {"a": a, "trigger_state": xt, "reset_state": xr},
             )
             sim_state = sim.advance_to(tf, context)
             return sim_state.context.continuous_state

@@ -25,8 +25,9 @@ from typing import TYPE_CHECKING, NamedTuple
 from functools import partial
 from collections import namedtuple
 from enum import IntEnum
-import jax.numpy as jnp
+
 import numpy as np
+
 from ..logging import logger
 from ..framework.error import BlockParameterError, ErrorCollector
 from ..framework.event import LeafEventCollection, ZeroCrossingEvent
@@ -152,6 +153,8 @@ def is_discontinuity(port: OutputPort) -> bool:
     signal_is_continuous = port.tracker.depends_on(
         [DependencyTicket.time, DependencyTicket.xc]
     )
+    if not signal_is_continuous:
+        return False
     port_is_ode_rhs = port.tracker.is_prerequisite_of([DependencyTicket.xcdot])
     return signal_is_continuous and port_is_ode_rhs
 
@@ -794,6 +797,9 @@ class DiscreteInitializer(LeafSystem):
             offset=self.dt,
         )
 
+    def reset_default_values(self, initial_state):
+        self.configure_discrete_state_default_value(default_value=initial_state)
+
     def _update(self, time, state, *_inputs, **_params):
         return cnp.logical_not(state.discrete_state)
 
@@ -852,7 +858,7 @@ class EdgeDetection(LeafSystem):
         prev_input: Array
         output: bool
 
-    @parameters(static=["edge_detection"], dynamic=["initial_state"])
+    @parameters(dynamic=["initial_state"], static=["edge_detection"])
     def __init__(self, dt, edge_detection, initial_state=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.dt = dt
@@ -902,6 +908,15 @@ class EdgeDetection(LeafSystem):
             self._output,
             prerequisites_of_calc=[DependencyTicket.xd, self.input_ports[0].ticket],
             requires_inputs=False,
+        )
+
+    def reset_default_values(self, initial_state):
+        # The discrete state will contain the previous input value and the output
+        self.configure_discrete_state_default_value(
+            default_value=self.DiscreteStateType(
+                prev_input=initial_state, output=False
+            ),
+            as_array=False,
         )
 
     def _update(self, time, state, *inputs, **params):
@@ -990,7 +1005,7 @@ class FilterDiscrete(LeafSystem):
             Array of filter coefficients.
     """
 
-    @parameters(dynamic=["b_coefficients"])
+    @parameters(static=["b_coefficients"])
     def __init__(
         self,
         dt,
@@ -1008,7 +1023,8 @@ class FilterDiscrete(LeafSystem):
         initial_state = cnp.zeros(len(b_coefficients) - 1)
         self.declare_discrete_state(default_value=initial_state)
 
-        self.is_feedthrough = b_coefficients[0] != 0
+        self.is_feedthrough = bool(b_coefficients[0] != 0)
+        self.b_coefficients = b_coefficients
         prerequisites_of_calc = []
         if self.is_feedthrough:
             prerequisites_of_calc.append(self.input_ports[0].ticket)
@@ -1035,13 +1051,12 @@ class FilterDiscrete(LeafSystem):
 
     def _output(self, time, state, *inputs, **parameters):
         xd = state.discrete_state
-        b_coefficients = parameters["b_coefficients"]
 
-        y = cnp.sum(cnp.dot(b_coefficients[1:], xd))
+        y = cnp.sum(cnp.dot(self.b_coefficients[1:], xd))
 
         if self.is_feedthrough:
             (u,) = inputs
-            y += u * b_coefficients[0]
+            y += u * self.b_coefficients[0]
 
         return y
 
@@ -1213,7 +1228,7 @@ class Integrator(LeafSystem):
             "enable_hold",
             "reset_on_enter_zeno",
         ],
-        dynamic=["initial_state", "zeno_tolerance", "lower_limit", "upper_limit"],
+        dynamic=["zeno_tolerance", "lower_limit", "upper_limit", "initial_state"],
     )
     def __init__(
         self,
@@ -1240,10 +1255,10 @@ class Integrator(LeafSystem):
 
         self.xdot_index = self.declare_input_port(name="in_0")
 
-        self.x0 = cnp.array(initial_state, dtype=self.dtype)
-        self.dtype = self.dtype if self.dtype is not None else self.x0.dtype
+        x0 = cnp.array(initial_state, dtype=self.dtype)
+        self.dtype = self.dtype if self.dtype is not None else x0.dtype
         self._continuous_state_idx = self.declare_continuous_state(
-            default_value=self.x0,
+            default_value=x0,
             ode=self._ode,
             prerequisites_of_calc=[self.input_ports[self.xdot_index].ticket],
         )
@@ -1332,17 +1347,16 @@ class Integrator(LeafSystem):
             raise ValueError("enable_hold cannot be changed after initialization")
 
         # Default initial condition unless modified in context
-        self.x0 = cnp.array(initial_state, dtype=self.dtype)
-        self.dtype = self.dtype if self.dtype is not None else self.x0.dtype
+        x0 = cnp.array(initial_state, dtype=self.dtype)
+        self.dtype = self.dtype if self.dtype is not None else x0.dtype
 
         self.configure_continuous_state(
             self._continuous_state_idx,
-            default_value=self.x0,
+            default_value=x0,
             ode=self._ode,
             prerequisites_of_calc=[self.input_ports[self.xdot_index].ticket],
         )
 
-        self.zeno_tolerance = zeno_tolerance
         self.reset_on_enter_zeno = reset_on_enter_zeno
 
         self.enable_limits = enable_limits
@@ -1378,6 +1392,13 @@ class Integrator(LeafSystem):
                     name="upper_limit",
                     direction="negative_then_non_negative",
                 )
+
+    def reset_default_values(self, **dynamic_parameters):
+        x0 = cnp.array(dynamic_parameters["initial_state"], dtype=self.dtype)
+        self.configure_continuous_state_default_value(
+            self._continuous_state_idx,
+            default_value=x0,
+        )
 
     def _ode(self, _time, state, *inputs, **params):
         # Normally, just integrate the input signal
@@ -1432,17 +1453,17 @@ class Integrator(LeafSystem):
         trigger = inputs[self.reset_trigger_index]
         return cnp.where(trigger, 1.0, -1.0)
 
-    def _reset(self, time, state, *inputs, **_params):
+    def _reset(self, time, state, *inputs, **params):
         # If the distance between events is less than the tolerance, then enter the Zeno state.
         dt = time - state.discrete_state.tprev
-        zeno = (dt - self.zeno_tolerance) <= 0
+        zeno = (dt - params["zeno_tolerance"]) <= 0
         tprev = time
 
         # Handle the reset event as usual
         if self.enable_external_reset:
             xc = inputs[self.reset_value_index]
         else:
-            xc = self.x0
+            xc = cnp.array(params["initial_state"], dtype=self.dtype)
 
         # Don't reset if entering Zeno state
         new_continuous_state = cnp.where(
@@ -1590,7 +1611,7 @@ class IntegratorDiscrete(LeafSystem):
             "enable_limits",
             "enable_hold",
         ],
-        dynamic=["initial_state", "lower_limit", "upper_limit"],
+        dynamic=["lower_limit", "upper_limit", "initial_state"],
     )
     def __init__(
         self,
@@ -1656,10 +1677,9 @@ class IntegratorDiscrete(LeafSystem):
             raise ValueError("enable_hold cannot be changed after initialization")
 
         # Default initial condition unless modified in context
-        self.x0 = cnp.array(initial_state, dtype=self.dtype)
-        self.dtype = self.dtype if self.dtype is not None else self.x0.dtype
-
-        self.declare_discrete_state(default_value=self.x0)
+        x0 = cnp.array(initial_state, dtype=self.dtype)
+        self.dtype = self.dtype if self.dtype is not None else x0.dtype
+        self.declare_discrete_state(default_value=x0)
         self.configure_periodic_update(
             self._periodic_update_idx, self._update, period=self.dt, offset=0.0
         )
@@ -1684,14 +1704,19 @@ class IntegratorDiscrete(LeafSystem):
             self._output,
             period=self.dt,
             offset=0.0,
-            default_value=self.x0,
+            default_value=x0,
             prerequisites_of_calc=prereqs,
         )
 
-    def _reset(self, *inputs):
+    def reset_default_values(self, **dynamic_parameters):
+        x0 = cnp.array(dynamic_parameters["initial_state"], dtype=self.dtype)
+        self.configure_discrete_state_default_value(default_value=x0)
+        self.configure_output_port_default_value(self.state_output_index, x0)
+
+    def _reset(self, *inputs, **params):
         if self.enable_external_reset:
             return inputs[self.reset_value_index]
-        return self.x0
+        return cnp.array(params["initial_state"], dtype=self.dtype)
 
     def _apply_reset_and_limits(self, x_new, *inputs, **params):
         # Reset and limits are applied to both the update and outputs
@@ -1700,7 +1725,7 @@ class IntegratorDiscrete(LeafSystem):
         if self.enable_reset:
             # If the reset is high, then return the reset value
             trigger = inputs[self.reset_trigger_index]
-            x_new = cnp.where(trigger, self._reset(*inputs), x_new)
+            x_new = cnp.where(trigger, self._reset(*inputs, **params), x_new)
 
         if self.enable_limits:
             lower_limit = params["lower_limit"] if self.has_lower_limit else -cnp.inf
@@ -1892,10 +1917,10 @@ class LogicalOperator(LeafSystem):
         return cnp.where(outp, 1.0, -1.0)
 
     def _or(self, time, state, *inputs, **parameters):
-        return cnp.logical_or(cnp.array(inputs[0]), jnp.array(inputs[1]))
+        return cnp.logical_or(cnp.array(inputs[0]), cnp.array(inputs[1]))
 
     def _and(self, time, state, *inputs, **parameters):
-        return cnp.logical_and(cnp.array(inputs[0]), jnp.array(inputs[1]))
+        return cnp.logical_and(cnp.array(inputs[0]), cnp.array(inputs[1]))
 
     def _not(self, time, state, *inputs, **parameters):
         (x,) = inputs
@@ -1906,11 +1931,11 @@ class LogicalOperator(LeafSystem):
 
     def _nor(self, time, state, *inputs, **parameters):
         return cnp.logical_not(
-            cnp.logical_or(jnp.array(inputs[0]), cnp.array(inputs[1]))
+            cnp.logical_or(cnp.array(inputs[0]), cnp.array(inputs[1]))
         )
 
     def _nand(self, time, state, *inputs, **parameters):
-        return jnp.logical_not(
+        return cnp.logical_not(
             cnp.logical_and(cnp.array(inputs[0]), cnp.array(inputs[1]))
         )
 
@@ -2510,6 +2535,19 @@ class PIDDiscrete(LeafSystem):
             prerequisites_of_calc=[DependencyTicket.xd, self.input_ports[0].ticket],
         )
 
+    def reset_default_values(self, **dynamic_parameters):
+        self.configure_discrete_state_default_value(
+            self.DiscreteStateType(
+                integral=dynamic_parameters["initial_state"],
+                e_prev=0.0,
+                e_dot_prev=0.0,
+            ),
+            as_array=False,
+        )
+        self.configure_output_port_default_value(
+            self.control_output, dynamic_parameters["initial_state"]
+        )
+
     def _eval_derivative(self, _time, state, *inputs, **_params):
         # Filtered derivative estimate
 
@@ -2912,10 +2950,10 @@ class Relay(LeafSystem):
         dynamic=[
             "on_threshold",
             "off_threshold",
+            "initial_state",
             "on_value",
             "off_value",
-            "initial_state",
-        ]
+        ],
     )
     def __init__(
         self, on_threshold, off_threshold, on_value, off_value, initial_state, **kwargs
@@ -2958,14 +2996,23 @@ class Relay(LeafSystem):
     def initialize(
         self, on_threshold, off_threshold, on_value, off_value, initial_state
     ):
-        self.declare_default_mode(
+        self.configure_default_mode(
             self.State.ON if initial_state == on_value else self.State.OFF
         )
 
+    def reset_default_values(self, **dynamic_parameters):
+        self.configure_default_mode(
+            self.State.ON
+            if dynamic_parameters["initial_state"] == dynamic_parameters["on_value"]
+            else self.State.OFF
+        )
+
     def _output(self, _time, state, **parameters):
-        on_value = parameters["on_value"]
-        off_value = parameters["off_value"]
-        return cnp.where(state.mode == self.State.ON, on_value, off_value)
+        return cnp.where(
+            state.mode == self.State.ON,
+            parameters["on_value"],
+            parameters["off_value"],
+        )
 
 
 class Ramp(SourceBlock):
@@ -3340,7 +3387,11 @@ class Sawtooth(SourceBlock):
         (0) The sawtooth signal.
     """
 
-    @parameters(dynamic=["amplitude", "frequency", "phase_delay"])
+    # `frequency` is set as a static parameter because it reconfigures the periodic
+    # update when initialize() is called which would break optimization and
+    # ensemble because they don't re-create the context and therefore won't call
+    # initialize() if `frequency` is updated.
+    @parameters(dynamic=["amplitude", "phase_delay"], static=["frequency"])
     def __init__(self, amplitude=1.0, frequency=0.5, phase_delay=1.0, **kwargs):
         super().__init__(self._func, **kwargs)
 
@@ -3355,18 +3406,19 @@ class Sawtooth(SourceBlock):
         # the discontinuity.
         self.declare_discrete_state(default_value=False)
 
-        period = 1 / frequency
+        self.period = 1 / frequency
         self.configure_periodic_update(
             self._periodic_update_idx,
             lambda *args, **kwargs: True,
-            period=period,
+            period=self.period,
             offset=phase_delay,
         )
 
     def _func(self, time, **parameters):
         # np.mod((t - phase_delay), (1.0 / frequency)) * amplitude
-        period = 1 / parameters["frequency"]
-        period_fraction = cnp.mod(time - parameters["phase_delay"] + self.eps, period)
+        period_fraction = cnp.mod(
+            time - parameters["phase_delay"] + self.eps, self.period
+        )
         return period_fraction * parameters["amplitude"]
 
     def initialize_static_data(self, context):
@@ -3505,8 +3557,6 @@ class Slice(FeedthroughBlock):
                 message=f"Slice block {self.name} detected invalid slice operator {slice_}. [] are optional. Valid examples: '1:3,4', '[:,4:10]'",
                 parameter_name="slice_",
             )
-        slice_config = str(slice_)  # copy the string
-        self.static_parameters["slice_"].set(slice_config)
 
         # replace the [] and eval to numpy slcie object
         slice_ = "np.s_[" + slice_ + "]"
@@ -3584,7 +3634,7 @@ class Step(SourceBlock):
             The time at which the step occurs.
     """
 
-    @parameters(dynamic=["start_value", "end_value", "step_time"])
+    @parameters(dynamic=["start_value", "end_value"], static=["step_time"])
     def __init__(self, start_value=0.0, end_value=1.0, step_time=1.0, **kwargs):
         super().__init__(self._func, **kwargs)
         self._periodic_update_idx = self.declare_periodic_update()
@@ -3592,6 +3642,7 @@ class Step(SourceBlock):
     def initialize(self, start_value, end_value, step_time):
         # Add a dummy event so that the ODE solver doesn't try to integrate through
         # the discontinuity.
+        self._step_time = step_time
         self.declare_discrete_state(default_value=False)
         self.configure_periodic_update(
             self._periodic_update_idx,
@@ -3602,7 +3653,7 @@ class Step(SourceBlock):
 
     def _func(self, time, **parameters):
         return cnp.where(
-            time >= parameters["step_time"],
+            time >= self._step_time,
             parameters["end_value"],
             parameters["start_value"],
         )
@@ -3752,8 +3803,6 @@ class UnitDelay(LeafSystem):
         self._output_port_idx = self.declare_output_port()
 
     def initialize(self, initial_state):
-        self.declare_discrete_state(default_value=initial_state)
-
         self.configure_periodic_update(
             self._periodic_update_idx, self._update, period=self.dt, offset=self.dt
         )
@@ -3764,9 +3813,13 @@ class UnitDelay(LeafSystem):
             period=self.dt,
             offset=0.0,
             requires_inputs=False,
-            default_value=initial_state,
             prerequisites_of_calc=[DependencyTicket.xd],
+            default_value=initial_state,
         )
+
+    def reset_default_values(self, initial_state):
+        self.declare_discrete_state(default_value=initial_state)
+        self.configure_output_port_default_value(self._output_port_idx, initial_state)
 
     def _update(self, _time, _state, u, **_params):
         # Every dt seconds, update the state to the current input value
@@ -3850,27 +3903,24 @@ class SignalDatatypeConversion(FeedthroughBlock):
             NumPy data type, e.g. "float32", "int64", etc.
     """
 
+    def _op(self, dtype, x):
+        # This check makes the numpy backend strict like jax
+        if cnp.active_backend == "numpy" and isinstance(x, (list, tuple)):
+            raise ValueError(
+                "SignalDatatypeConversion block does not support list or tuple inputs."
+            )
+
+        return cond(
+            isinstance(x, cnp.ndarray),
+            lambda x: cnp.astype(x, dtype),
+            lambda x: cnp.array(x, dtype),
+            x,
+        )
+
     @parameters(static=["convert_to_type"])
     def __init__(self, convert_to_type, *args, **kwargs):
-        self.dtype = np.dtype(convert_to_type)
-        super().__init__(
-            lambda x: cond(
-                isinstance(x, cnp.ndarray),
-                lambda x: cnp.astype(x, self.dtype),
-                lambda x: cnp.array(x, self.dtype),
-                x,
-            ),
-            *args,
-            **kwargs,
-        )
+        super().__init__(partial(self._op, np.dtype(convert_to_type)), *args, **kwargs)
 
     def initialize(self, convert_to_type):
         self.dtype = np.dtype(convert_to_type)
-        self.replace_op(
-            lambda x: cond(
-                isinstance(x, cnp.ndarray),
-                lambda x: cnp.astype(x, self.dtype),
-                lambda x: cnp.array(x, self.dtype),
-                x,
-            )
-        )
+        self.replace_op(partial(self._op, np.dtype(convert_to_type)))

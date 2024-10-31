@@ -172,7 +172,6 @@ class DiagramBuilder:
         logger.debug(
             f"Connected port {src.name} of system {src.system.name} to port {dest.name} of system {dest.system.name}"
         )
-        logger.debug(f"Connection map so far: {self._connection_map}")
 
     def export_input(self, port: InputPort, name: str = None) -> int:
         """Export an input port of a child system as a diagram-level input.

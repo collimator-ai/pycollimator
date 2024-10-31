@@ -14,7 +14,8 @@
 
 import numpy as np
 
-from collimator.framework.system_base import parameters
+from collimator.framework.parameter import with_resolved_parameters
+from collimator.framework import parameters
 
 from ...backend import numpy_api as cnp
 
@@ -115,7 +116,10 @@ class InfiniteHorizonKalmanFilter(KalmanFilterBase):
         # Identity matrix of size 1, and used wherever KalmanFilterBase demands
         # P_hat-like matrices
         self.dummy_P_hat_0 = cnp.eye(1)
-        super().__init__(dt, x_hat_0, self.dummy_P_hat_0, name, **kwargs)
+        is_feedthrough = False if D is None else bool(not cnp.allclose(D, 0.0))
+        super().__init__(
+            dt, x_hat_0, self.dummy_P_hat_0, is_feedthrough, name, **kwargs
+        )
 
     def initialize(
         self, dt, A, B, C=None, D=None, G=None, Q=None, R=None, x_hat_0=None
@@ -130,6 +134,7 @@ class InfiniteHorizonKalmanFilter(KalmanFilterBase):
 
         if D is None:
             D = cnp.zeros((self.ny, self.nu))
+        self.is_feedthrough = bool(not cnp.allclose(D, 0.0))
 
         if G is None:
             G = B
@@ -165,14 +170,15 @@ class InfiniteHorizonKalmanFilter(KalmanFilterBase):
 
     def _correct(self, time, x_hat_minus, P_hat_minus, *inputs):
         u, y = inputs
-        u = cnp.atleast_1d(u)
         y = cnp.atleast_1d(y)
 
         C, D = self.C, self.D
 
-        x_hat_plus = x_hat_minus + cnp.dot(
-            self.K, y - cnp.dot(C, x_hat_minus) - cnp.dot(D, u)
-        )  # n|n
+        x_hat_plus = x_hat_minus + cnp.dot(self.K, y - cnp.dot(C, x_hat_minus))  # n|n
+
+        if self.is_feedthrough:
+            u = cnp.atleast_1d(u)
+            x_hat_plus = x_hat_plus - cnp.dot(self.K, cnp.dot(D, u))
 
         return x_hat_plus, self.dummy_P_hat_0
 
@@ -193,6 +199,7 @@ class InfiniteHorizonKalmanFilter(KalmanFilterBase):
     #######################################
 
     @staticmethod
+    @with_resolved_parameters
     def for_continuous_plant(
         plant,
         x_eq,
@@ -363,6 +370,7 @@ class InfiniteHorizonKalmanFilter(KalmanFilterBase):
     ##############################################
 
     @staticmethod
+    @with_resolved_parameters
     def global_filter_for_continuous_plant(
         plant,
         x_eq,

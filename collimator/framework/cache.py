@@ -27,6 +27,7 @@ retrieved by other SystemCallbacks that depend on them.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, NamedTuple, Callable, List
 import dataclasses
 
@@ -36,6 +37,8 @@ from .dependency_graph import (
 )
 
 from collimator.logging import logger
+from collimator.backend import numpy_api as cnp
+from collimator.framework.error import CallbackIsNotDifferentiableError
 
 if TYPE_CHECKING:
     from ..backend.typing import Array
@@ -109,10 +112,13 @@ class SystemCallback:
 
         logger.debug(
             "Initialized callback %s:%s with prereqs %s",
-            self.system.name,
+            self.system.name_path_str,
             self.name,
             self.prerequisites_of_calc,
         )
+
+        # A basic port output data cache for numpy
+        self._basic_output_cache = BasicOutputCache(self)
 
     def __hash__(self) -> int:
         locator = (self.system, self.callback_index)
@@ -130,7 +136,24 @@ class SystemCallback:
         Returns:
             The calculated value from the callback, expected to be a Array.
         """
-        return self._callback(root_context)
+        if not root_context.is_initialized:
+            if self.default_value is None:
+                self.default_value = self._callback(root_context)
+            return self.default_value
+
+        # Note: using the BasicOutputCache here does not give any performance
+        # gain, due to the overhead of computing the keys and lookups.
+        try:
+            result = self._callback(root_context)
+        except ValueError as e:
+            # this error is raised if the callback is not differentiable
+            if "do not support JVP." in str(e):
+                raise CallbackIsNotDifferentiableError(
+                    system=self.system,
+                    port_name=self.name,
+                )
+            raise
+        return result
 
     @property
     def tracker(self) -> DependencyTracker:
@@ -171,3 +194,72 @@ class CallbackTracer(NamedTuple):
             A new CallbackTracer object with `is_out_of_date` set to True.
         """
         return self._replace(is_out_of_date=True)  # pylint: disable=no-member
+
+
+class BasicOutputCache:
+    """
+    A very simple quite "hacky" implementation of a signals output cache.
+
+    This is meant for numpy backend only, can not be expected to work with JAX,
+    even in check_types because arrays should be traceable.
+    """
+
+    __active = False
+
+    # This env var might be temporary while we test the implementation, or until
+    # we have a proper solution that solves it for JAX and numpy both.
+    __is_disabled = os.environ.get("COLLIMATOR_DISABLE_OUTPUT_CACHE", "0") == "1"
+    __global_key = 0
+
+    @classmethod
+    def activate(cls, backend: str = None):
+        """Enables caching conditionally.
+
+        Enables if using numpy backend.
+        Calling this function invalidates all caches.
+        """
+        cls.__active = (not cls.__is_disabled) and (
+            backend or cnp.active_backend
+        ) == "numpy"
+        cls.__global_key += 1
+
+    @classmethod
+    def is_active(cls):
+        return cls.__active and not cls.__is_disabled
+
+    def __init__(self, target: SystemBase | SystemCallback):
+        self._key = None
+        self._value = None
+        self._global_key_at_creation = self.__global_key
+        # if hasattr(target, "system"):
+        #     self._debug_name = f"{target.system.name_path_str}.{target.name}"
+        # else:
+        #     self._debug_name = target.name_path_str
+
+    def _cache_key(self, context):
+        # This uses a pretty poor hashing mechanism to validate that a given
+        # cache entry is still valid. id() will be reused (it's the C pointer)
+        # and time may not change during a solver reset. Mainly, we rely on
+        # manual calls to cache invalidation. NOTE: only for numpy as of now.
+        return (
+            self._global_key_at_creation
+            ^ id(context)
+            ^ id(context.parameters)
+            ^ hash(context.time)
+        )
+
+    def invalidate(self):
+        self._key = None
+        self._value = None
+        self._global_key_at_creation = self.__global_key
+
+    def get(self, context):
+        if not self.is_active() or self._key != self._cache_key(context):
+            return None
+        return self._value
+
+    def set(self, context, value):
+        if not self.is_active():
+            return
+        self._key = self._cache_key(context)
+        self._value = value

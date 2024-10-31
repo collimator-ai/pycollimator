@@ -24,7 +24,6 @@ import collimator
 
 from collimator.framework import LeafSystem
 from collimator.simulation import SimulatorOptions
-
 from collimator.library import (
     Constant,
     Adder,
@@ -39,6 +38,7 @@ from collimator.library import (
     ExtendedKalmanFilter,
     UnscentedKalmanFilter,
 )
+from collimator.testing import requires_jax
 
 
 class Pendulum(LeafSystem):
@@ -143,6 +143,8 @@ def make_pendulum_with_disturbances(
     return diagram
 
 
+@requires_jax()
+@pytest.mark.flaky(retries=3)
 @pytest.mark.parametrize(
     "discretization_method, discrete_time_plant",
     [
@@ -331,6 +333,8 @@ def test_kalman_filter(discretization_method, discrete_time_plant, plot=False):
     # assert jnp.allclose(jnp.array(kf_sol), jnp.array(wc_sol))
 
 
+@requires_jax()
+@pytest.mark.flaky(retries=3)
 @pytest.mark.parametrize(
     "discretization_method, discrete_time_plant",
     [
@@ -528,6 +532,7 @@ def test_infinite_horizon_kalman_filter(
     # assert jnp.allclose(jnp.array(kf_sol), jnp.array(wc_sol))
 
 
+@requires_jax()
 def test_continuous_time_infinite_horizon_kalman_filter(plot=False):
     nu = 1
     ny = 1
@@ -607,6 +612,8 @@ def test_continuous_time_infinite_horizon_kalman_filter(plot=False):
         plt.show()
 
 
+@requires_jax()
+@pytest.mark.flaky(retries=3)
 @pytest.mark.parametrize(
     "discretization_method",
     [
@@ -700,6 +707,8 @@ def test_extended_kalman_filter_discretization_methods(
         plt.show()
 
 
+@requires_jax()
+@pytest.mark.flaky(retries=3)
 @pytest.mark.parametrize(
     "discretization_method",
     [

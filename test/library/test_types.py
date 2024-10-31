@@ -22,8 +22,6 @@ import pytest
 
 from collimator.library import SignalDatatypeConversion
 
-from collimator.framework.error import StaticError
-
 
 @pytest.fixture(scope="class")
 def eval_conversion():
@@ -120,5 +118,5 @@ class TestEvalConversion:
         ],
     )
     def test_invalid_dtype_conversion(self, eval_conversion, input_val, dtype_str):
-        with pytest.raises(StaticError):
+        with pytest.raises((TypeError, ValueError)):
             eval_conversion(input_val, dtype_str)

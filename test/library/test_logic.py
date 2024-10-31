@@ -143,8 +143,13 @@ class TestLogicalOperator:
         assert np.all(results.outputs["nand_"][0] == nand_sol)
 
     def test_invalid_input(self):
+        builder = collimator.DiagramBuilder()
         with pytest.raises(BlockParameterError) as e:
-            library.LogicalOperator(function="some", name="LogicalOperator")
+            builder.add(
+                library.LogicalOperator(function="some", name="LogicalOperator")
+            )
+            diagram = builder.build()
+            diagram.create_context()
         print(e)
         # Success! The test failed as expected.
         assert (
@@ -194,8 +199,11 @@ class TestLogicalReducer:
         assert np.all(results.outputs["all_arr"][0] == all_arr_sol)
 
     def test_invalid_input(self):
+        builder = collimator.DiagramBuilder()
         with pytest.raises(BlockParameterError) as e:
-            library.LogicalReduce(function="some", name="LogicalReduce")
+            builder.add(library.LogicalReduce(function="some", name="LogicalReduce"))
+            diagram = builder.build()
+            diagram.create_context()
         print(e)
         # Success! The test failed as expected.
         assert (

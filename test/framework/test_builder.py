@@ -236,6 +236,7 @@ class TestAlgebraicLoops:
 
         with pytest.raises(AlgebraicLoopError, match=r"Algebraic loop detected"):
             diagram = builder.build(name="root")
+            diagram.create_context()
             diagram.check_no_algebraic_loops()
 
     def test_algebraic_loop_multi_block(self):
@@ -247,6 +248,7 @@ class TestAlgebraicLoops:
 
         with pytest.raises(AlgebraicLoopError, match=r"Algebraic loop detected"):
             diagram = builder.build(name="root")
+            diagram.create_context()
             diagram.check_no_algebraic_loops()
 
     def test_algebraic_loop_submodel(self):
@@ -267,6 +269,7 @@ class TestAlgebraicLoops:
 
         with pytest.raises(AlgebraicLoopError, match=r"Algebraic loop detected"):
             diagram = builder.build(name="root")
+            diagram.create_context()
             diagram.check_no_algebraic_loops()
 
 
@@ -340,6 +343,7 @@ class TestComposition:
         from collimator.framework import DependencyTicket
 
         diagram = self._make_nested_diagram()
+        diagram.create_context()
         offset = diagram["Offset_0"]
         submodel = diagram["submodel"]
         integrator = submodel["Integrator_0"]
@@ -492,6 +496,7 @@ class TestPrimitiveSystems:
         builder._check_contents_are_complete()
 
         diagram = builder.build()
+        diagram.create_context()
 
         diagram.check_no_algebraic_loops()
 
@@ -556,6 +561,7 @@ class TestPrimitiveSystems:
         builder._check_not_already_built()
         builder._check_contents_are_complete()
         diagram = builder.build()
+        diagram.create_context()
 
         diagram.check_no_algebraic_loops()
 

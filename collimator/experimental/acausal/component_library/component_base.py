@@ -10,13 +10,15 @@
 # Affero General Public License along with this program. If not, see
 # <https://www.gnu.org/licenses/>.
 
+from abc import ABCMeta
+from functools import wraps
 from typing import Tuple, List, Dict, Set, TYPE_CHECKING, Callable
 
 from .base import EqnEnv, Domain, SymKind, Sym, EqnKind, Eqn
-from .fluid_media import Fluid
 from ..error import AcausalModelError
 from collimator.backend import numpy_api as cnp
 from collimator.backend.typing import ArrayLike
+from collimator.framework import build_recorder
 
 from collimator.lazy_loader import LazyLoader
 
@@ -39,12 +41,20 @@ class PortBase:
             The 'flow' symbol associated with the port.
         pot (Sym):
             The 'potential' symbol associated with the port.
+        streams (Dict{stream_var_name:Sym}):
+            The set of stream variables associated with this port.
+            Only found in FluidPort.
     """
+
+    streams = None
 
     def validate(self):
         assert isinstance(self.domain, Domain)
         assert self.flow.kind == SymKind.flow
         assert self.pot.kind == SymKind.pot
+        # for k, v in self.streams.items():
+        #     assert k in ALLOWED_STREAM_NAMES
+        #     assert v.kind == SymKind.stream
 
     def __repr__(self):
         return str(
@@ -68,19 +78,55 @@ class ElecPort(PortBase):
 
 
 class FluidPort(PortBase):
-    """Class for acausal port in the fluid_i domain.
+    """Class for acausal port in the fluid domain.
     The fluid attribute is assigned after the constructor. the reason is
     that the constructor is called at component creation. However, the
     fluid at the port is not known until DiagramProcessing has performed
-    some graph analysis to know which FluidPropertiesd conponent the port
+    some graph analysis to know which FluidProperties component the port
     is associated with (connected to). Once the association with a FluidProperties
     components is made, the 'fluid' attribute is assigned.
     """
 
-    fluid: Fluid = None
+    fluid = None
+
+    def __init__(
+        self,
+        name,
+        P_sym=None,
+        M_sym=None,
+        h_outflow=None,
+        h_inStream=None,
+        T_sym=None,
+        u_sym=None,
+        d_sym=None,
+        no_mflow=False,  # set to true for ideal sensor ports
+    ):
+        self.domain = Domain.fluid
+        self.name = name
+        self.pot = P_sym
+        self.flow = M_sym
+        self.p = P_sym  # alias for constructing equations in components
+        self.mflow = M_sym  # alias for constructing equations in components
+        self.T = T_sym
+        self.u = u_sym
+        self.d = d_sym
+        self.h_outflow = h_outflow
+        self.h_inStream = h_inStream
+        self.no_mflow = no_mflow
+        self.validate()
+
+    def assign_fluid(self, fluid):
+        self.fluid = fluid
+
+
+class HydraulicPort(PortBase):
+    """Class for acausal port in the hydraulic domain."""
+
+    fluid = None
+    no_mflow = False
 
     def __init__(self, name, P_sym=None, M_sym=None):
-        self.domain = Domain.fluid
+        self.domain = Domain.hydraulic
         self.name = name
         self.pot = P_sym
         self.flow = M_sym
@@ -123,7 +169,21 @@ class TranslationalPort(PortBase):
         self.validate()
 
 
-class ComponentBase:
+class AcausalBlockMeta(ABCMeta):
+    def __new__(cls, name, bases, dct):
+        if "__init__" in dct:
+            orig_init = dct["__init__"]
+
+            @wraps(orig_init)
+            def new_init(self, *args, **kwargs):
+                orig_init(self, *args, **kwargs)
+                build_recorder.create_block(self, orig_init, *args, **kwargs)
+
+            dct["__init__"] = new_init
+        return super().__new__(cls, name, bases, dct)
+
+
+class ComponentBase(metaclass=AcausalBlockMeta):
     """Base class for acausal components.
 
     Attributes:
@@ -139,8 +199,12 @@ class ComponentBase:
             the numerical id  is negative for ports on the left side of the block in teh UI,
             and positive for ports on the right. -1 and 1 are thr top, increasing values go down.
         zc (dict{zc_idx:(zc_expr,direction)}):
-            A dictionary tracking any zero crossings thta this component adds to the AcusalSystem.
+            A dictionary tracking any zero crossings that this component adds to the AcusalSystem.
             <more details please>
+        fluid_port_sets ([set(fldA port_ids), set(fldB port_ids)]):
+            a list of port sets, where each set has all the ports of a component that interact
+            with the same fluid. most components only have one set, but multi-fluid heat exchangers
+            will have more than one set.
 
     """
 
@@ -152,6 +216,7 @@ class ComponentBase:
         self.zc: Dict = {}
         self.cond_name_suffix: int = 0
         self.next_zc_idx: int = 0
+        self.fluid_port_sets: List = []
 
     def __repr__(self):
         return str(self.__class__.__name__ + "_" + self.name)
@@ -249,14 +314,80 @@ class ComponentBase:
         port_name: str,
         P_ic: float = None,
         P_ic_fixed: bool = False,
-    ) -> Tuple[Sym, Sym]:
+        no_mflow: bool = False,
+    ):
         self._check_port_name(port_name)
         sym_base_name = self.name + "_" + port_name
         P = self.declare_symbol(
             ev, "P", sym_base_name, kind=SymKind.pot, ic=P_ic, ic_fixed=P_ic_fixed
         )
         M = self.declare_symbol(ev, "M", sym_base_name, kind=SymKind.flow, ic=0.0)
-        self.ports[port_name] = FluidPort(port_name, P_sym=P, M_sym=M)
+        h_outflow = self.declare_symbol(
+            ev, "h_outflow", sym_base_name, kind=SymKind.stream
+        )
+        h_inStream = self.declare_symbol(
+            ev, "h_inStream", sym_base_name, kind=SymKind.stream
+        )
+        T = self.declare_symbol(ev, "T", sym_base_name, kind=SymKind.var)
+        u = self.declare_symbol(ev, "u", sym_base_name, kind=SymKind.var)
+        d = self.declare_symbol(ev, "d", sym_base_name, kind=SymKind.var)
+
+        self.ports[port_name] = FluidPort(
+            port_name,
+            P_sym=P,
+            M_sym=M,
+            h_outflow=h_outflow,
+            h_inStream=h_inStream,
+            T_sym=T,
+            u_sym=u,
+            d_sym=d,
+            no_mflow=no_mflow,
+        )
+
+    def declare_fluid_volume(
+        self,
+        ev: EqnEnv,
+        volume_name: str,
+        fluid_volume: float,
+        P_ic: float = None,
+        P_ic_fixed: bool = False,
+        T_ic: float = None,
+        T_ic_fixed: bool = False,
+    ) -> Tuple[Sym, Sym, Sym, Sym, Sym, Sym, Sym, Sym]:
+        sbn = self.name + "_" + volume_name
+        kv = SymKind.var
+        P = self.declare_symbol(
+            ev, "P", sbn, kind=SymKind.pot, ic=P_ic, ic_fixed=P_ic_fixed
+        )
+        V = self.declare_symbol(ev, "V", sbn, kind=SymKind.param, val=fluid_volume)
+        T = self.declare_symbol(ev, "T", sbn, kind=kv, ic=T_ic, ic_fixed=T_ic_fixed)
+        h = self.declare_symbol(ev, "h", sbn, kind=kv)
+        u = self.declare_symbol(ev, "u", sbn, kind=kv)
+        d = self.declare_symbol(ev, "d", sbn, kind=kv)
+        m = self.declare_symbol(ev, "m", sbn, kind=kv)
+        U = self.declare_symbol(ev, "U", sbn, kind=kv)
+        return P, V, T, h, u, d, m, U
+
+    def declare_hydraulic_port(
+        self,
+        ev: EqnEnv,
+        port_name: str,
+        P_ic: float = None,
+        P_ic_fixed: bool = False,
+    ) -> Tuple[Sym, Sym]:
+        self._check_port_name(port_name)
+        sym_base_name = self.name + "_" + port_name
+        P = self.declare_symbol(
+            ev,
+            "P",
+            sym_base_name,
+            kind=SymKind.pot,
+            ic=P_ic,
+            ic_fixed=P_ic_fixed,
+        )
+
+        M = self.declare_symbol(ev, "M", sym_base_name, kind=SymKind.flow)
+        self.ports[port_name] = HydraulicPort(port_name, P_sym=P, M_sym=M)
         return P, M
 
     def declare_rotational_port(
@@ -520,6 +651,7 @@ class ComponentBase:
         then_expr,
         else_expr,
         cond_name: str = None,
+        non_bool_zc_expr=None,
     ):
         if cond_name is None:
             cond_name = "cond_" + self.name + "_" + str(self.cond_name_suffix)
@@ -536,7 +668,13 @@ class ComponentBase:
             sym=cond_f,
             kind=SymKind.cond,
         )
-        self.delcare_zc(if_expr, "crosses_zero", True)
+        if non_bool_zc_expr is not None:
+            # this creates a non boolean values zero crossing, but the caller must 'know'
+            # how to formulate the zc expression apporpiately for the conditional
+            self.delcare_zc(non_bool_zc_expr, "crosses_zero", False)
+        else:
+            # this creates a boolean valued zc expression
+            self.delcare_zc(if_expr, "crosses_zero", True)
 
         return cond_sym
 
@@ -550,9 +688,11 @@ class ComponentBase:
             raise ValueError(f"declare_equation() Eqn {eqn} already exists.")
         self.eqs.add(eqn)
 
-    def add_eqs(self, eqs: List["sp.Eq"]):
+    def add_eqs(self, eqs: List["sp.Eq"], kind=None):
+        if kind is None:
+            kind = EqnKind.comp
         for e in eqs:
-            self.declare_equation(e)
+            self.declare_equation(e, kind=kind)
 
     def get_syms_by_kind(self, kind: SymKind):
         syms = []
@@ -574,7 +714,17 @@ class ComponentBase:
                     return sym
         return None
 
-    def finalize(self):
+    def declare_fluid_port_set(self, ports: set):
+        ports = set(ports)
+        for existing_set in self.fluid_port_sets:
+            if existing_set & ports:
+                raise AcausalModelError(
+                    message=f"Component {self.name} has ports {existing_set & ports} assigned to multiple fluids."
+                )
+
+        self.fluid_port_sets.append(ports)
+
+    def finalize(self, ev):
         """
         This is an abstract method that is called after some diagram processing
         has been completed. Some components cannot be fully defined until after
@@ -582,7 +732,7 @@ class ComponentBase:
         Only after this can the component definition be 'finalized'.
         This method is called on all components, even if most components do nothing.
 
-        Example: Fluid components may have equations whihc depend on fluid properties.
+        Example: fluid domain components may have equations which depend on fluid properties.
         Since fluid properties are assigned to a set of fluid components using a
         FluidProperties component connected to the network, components who need fluid
         properties intheir equations can only define those equations once the fluid

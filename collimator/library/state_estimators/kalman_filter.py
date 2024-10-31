@@ -14,7 +14,10 @@
 
 import jax.numpy as jnp
 
+from collimator.framework.parameter import with_resolved_parameters
+
 from ...framework import parameters
+from ...backend import numpy_api as cnp
 from .utils import (
     check_shape_compatibilities,
     linearize_and_discretize_continuous_plant,
@@ -89,7 +92,8 @@ class KalmanFilter(KalmanFilterBase):
         name=None,
         **kwargs,
     ):
-        super().__init__(dt, x_hat_0, P_hat_0, name, **kwargs)
+        is_feedthrough = False if D is None else bool(not cnp.allclose(D, 0.0))
+        super().__init__(dt, x_hat_0, P_hat_0, is_feedthrough, name, **kwargs)
 
     def initialize(
         self,
@@ -114,6 +118,7 @@ class KalmanFilter(KalmanFilterBase):
 
         if D is None:
             D = jnp.zeros((self.ny, self.nu))
+        self.is_feedthrough = bool(not cnp.allclose(D, 0.0))
 
         if G is None:
             G = B
@@ -147,7 +152,6 @@ class KalmanFilter(KalmanFilterBase):
 
     def _correct(self, time, x_hat_minus, P_hat_minus, *inputs):
         u, y = inputs
-        u = jnp.atleast_1d(u)
         y = jnp.atleast_1d(y)
 
         C, D = self.C, self.D
@@ -155,9 +159,11 @@ class KalmanFilter(KalmanFilterBase):
         # TODO: improved numerics to avoud computing explicit inverse
         K = P_hat_minus @ C.T @ jnp.linalg.inv(C @ P_hat_minus @ C.T + self.R)
 
-        x_hat_plus = x_hat_minus + jnp.dot(
-            K, y - jnp.dot(C, x_hat_minus) - jnp.dot(D, u)
-        )  # n|n
+        x_hat_plus = x_hat_minus + jnp.dot(K, y - jnp.dot(C, x_hat_minus))  # n|n
+
+        if self.is_feedthrough:
+            u = cnp.atleast_1d(u)
+            x_hat_plus = x_hat_plus - cnp.dot(self.K, cnp.dot(D, u))
 
         P_hat_plus = jnp.matmul(self.eye_x - jnp.matmul(K, C), P_hat_minus)  # n|n
 
@@ -183,6 +189,7 @@ class KalmanFilter(KalmanFilterBase):
     #######################################
 
     @staticmethod
+    @with_resolved_parameters
     def for_continuous_plant(
         plant,
         x_eq,
@@ -359,6 +366,7 @@ class KalmanFilter(KalmanFilterBase):
     ##############################################
 
     @staticmethod
+    @with_resolved_parameters
     def global_filter_for_continuous_plant(
         plant,
         x_eq,

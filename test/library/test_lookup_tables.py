@@ -22,7 +22,8 @@ from scipy.interpolate import LinearNDInterpolator
 import jax.numpy as jnp
 import collimator
 from collimator import library
-from collimator.backend import numpy_api as cnp
+from collimator.testing import set_backend
+from collimator.framework.error import StaticError
 
 
 class TestLookupTable1d:
@@ -58,9 +59,9 @@ class TestLookupTable1d:
         backend,
     ):
         if backend == "numpy":
-            cnp.set_backend("numpy")
+            set_backend("numpy")
         else:
-            cnp.set_backend("jax")
+            set_backend("jax")
 
         assert jnp.allclose(
             self.evaluate_lookuptable_block_output(
@@ -68,7 +69,7 @@ class TestLookupTable1d:
             ),
             expected,
         )
-        cnp.set_backend("jax")
+        set_backend("jax")
 
     @pytest.mark.parametrize(
         "input,expected",
@@ -95,16 +96,33 @@ class TestLookupTable1d:
         )
 
     def test_invalid_interpolation(self, input_array, output_array):
-        with pytest.raises(ValueError):
-            library.LookupTable1d(input_array, output_array, "invalid")
+        builder = collimator.DiagramBuilder()
+        with pytest.raises(StaticError):
+            builder.add(library.LookupTable1d(input_array, output_array, "invalid"))
+            diagram = builder.build()
+            diagram.create_context()
 
     def test_invalid_input_array(self, output_array):
-        with pytest.raises(ValueError):
-            library.LookupTable1d(jnp.array([[0, 1], [2, 3]]), output_array, "linear")
+        builder = collimator.DiagramBuilder()
+        with pytest.raises(StaticError):
+            builder.add(
+                library.LookupTable1d(
+                    jnp.array([[0, 1], [2, 3]]), output_array, "linear"
+                )
+            )
+            diagram = builder.build()
+            diagram.create_context()
 
     def test_invalid_output_array(self, input_array):
-        with pytest.raises(ValueError):
-            library.LookupTable1d(input_array, jnp.array([[0, 1], [2, 3]]), "linear")
+        builder = collimator.DiagramBuilder()
+        with pytest.raises(StaticError):
+            builder.add(
+                library.LookupTable1d(
+                    input_array, jnp.array([[0, 1], [2, 3]]), "linear"
+                )
+            )
+            diagram = builder.build()
+            diagram.create_context()
 
 
 class TestLookupTable2d:
@@ -169,9 +187,9 @@ class TestLookupTable2d:
         backend,
     ):
         if backend == "numpy":
-            cnp.set_backend("numpy")
+            set_backend("numpy")
         else:
-            cnp.set_backend("jax")
+            set_backend("jax")
 
         output = self.evaluate_lookuptable_block_output(
             input_x, input_y, input_x_array, input_y_array, output_table_array
@@ -186,43 +204,48 @@ class TestLookupTable2d:
         expected = scipy_interpolant(clipped_input_x, clipped_input_y)
 
         assert jnp.allclose(output, expected)
-        cnp.set_backend("jax")
+        set_backend("jax")
 
     def test_invalid_interpolation(
         self, input_x_array, input_y_array, output_table_array
     ):
-        with pytest.raises(NotImplementedError):
-            library.LookupTable2d(
+        with pytest.raises(StaticError):
+            block = library.LookupTable2d(
                 input_x_array, input_y_array, output_table_array, "invalid"
             )
+            block.create_context()
 
     def test_invalid_input_x_array(self, input_y_array, output_table_array):
-        with pytest.raises(ValueError):
-            library.LookupTable2d(
+        with pytest.raises(StaticError):
+            block = library.LookupTable2d(
                 jnp.array([[0, 1], [2, 3]]), input_y_array, output_table_array, "linear"
             )
+            block.create_context()
 
     def test_invalid_input_y_array(self, input_x_array, output_table_array):
-        with pytest.raises(ValueError):
-            library.LookupTable2d(
+        with pytest.raises(StaticError):
+            block = library.LookupTable2d(
                 input_x_array, jnp.array([[0, 1], [2, 3]]), output_table_array, "linear"
             )
+            block.create_context()
 
     def test_invalid_output_table_array(self, input_x_array, input_y_array):
-        with pytest.raises(ValueError):
-            library.LookupTable2d(
+        with pytest.raises(StaticError):
+            block = library.LookupTable2d(
                 input_x_array, input_y_array, jnp.array([0, 1, 2, 3, 4]), "linear"
             )
+            block.create_context()
 
     def test_input_output_shape_mismatch(self, input_x_array, input_y_array):
-        with pytest.raises(ValueError):
-            library.LookupTable2d(
+        with pytest.raises(StaticError):
+            block = library.LookupTable2d(
                 input_x_array, input_y_array, jnp.ones((4, 5)), "linear"
             )
+            block.create_context()
 
 
 if __name__ == "__main__":
-    cnp.set_backend("numpy")
+    set_backend("numpy")
     tlut2 = TestLookupTable2d()
     tlut2.evaluate_lookuptable_block_output(
         0.5,

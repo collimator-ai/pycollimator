@@ -10,15 +10,14 @@
 # Affero General Public License along with this program. If not, see
 # <https://www.gnu.org/licenses/>.
 
-from timeit import timeit
 from functools import partial
+from timeit import timeit
+
 import numpy as np
 
-from ..simulation import simulate, SimulatorOptions
-from ..backend import jit, numpy_api
-
-# from ..profiling import Profiler
-from ..logging import logger
+from collimator.backend import jit, numpy_api
+from collimator.logging import logger
+from collimator.simulation import SimulatorOptions, simulate
 
 
 def make_benchmark(

@@ -17,7 +17,7 @@ from typing import NamedTuple
 
 from collimator.backend import numpy_api as cnp
 
-from ...framework import LeafSystem
+from ...framework import LeafSystem, DependencyTicket
 
 
 class KalmanFilterBase(LeafSystem, ABC):
@@ -101,6 +101,7 @@ class KalmanFilterBase(LeafSystem, ABC):
         dt,
         x_hat_0,
         P_hat_0,
+        is_feedthrough,
         name=None,
         **kwargs,
     ):
@@ -108,8 +109,8 @@ class KalmanFilterBase(LeafSystem, ABC):
 
         self.dt = dt
 
-        self.declare_input_port()  # u
-        self.declare_input_port()  # y
+        self.u_in_index = self.declare_input_port("u")
+        self.y_in_index = self.declare_input_port("y")
 
         self.declare_discrete_state(
             default_value=self.DiscreteStateType(
@@ -127,12 +128,23 @@ class KalmanFilterBase(LeafSystem, ABC):
             offset=0.0,
         )
 
+        self.is_feedthrough = is_feedthrough
+        y_ticket = self.input_ports[self.y_in_index].ticket
+        u_ticket = self.input_ports[self.u_in_index].ticket
+        prereqs = [DependencyTicket.xd, y_ticket]
+        required_inputs = [self.y_in_index]
+
+        if self.is_feedthrough:
+            required_inputs.insert(0, self.u_in_index)
+            prereqs.insert(0, u_ticket)
+
         self.declare_output_port(
             self._feedthrough_output_x_hat,
             period=dt,
             offset=0.0,
             default_value=x_hat_0,
-            requires_inputs=True,
+            requires_inputs=required_inputs,
+            prerequisites_of_calc=prereqs,
         )
 
     @abstractmethod

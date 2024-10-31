@@ -18,12 +18,16 @@ from collimator.experimental.acausal.diagram_processing import DiagramProcessing
 from collimator.experimental.acausal.acausal_diagram import AcausalDiagram
 from collimator.experimental.acausal.index_reduction.index_reduction import (
     IndexReduction,
+    SemiExplicitDAE,
+)
+from collimator.experimental.acausal.index_reduction.equation_utils import (
+    compute_initial_conditions,
 )
 from collimator.experimental.acausal.error import (
     AcausalModelError,
     AcausalCompilerError,
 )
-from collimator.framework import DependencyTicket, LeafSystem
+from collimator.framework import DependencyTicket, LeafSystem, build_recorder
 from collimator.framework.system_base import UpstreamEvalError
 from collimator.lazy_loader import LazyLoader
 from collimator.framework.system_base import Parameter
@@ -45,11 +49,11 @@ class AcausalSystem(LeafSystem):
     inports_maps: dict[str, dict[int, int]] = None
 
     def __init__(
-        self, dp: DiagramProcessing, ir: IndexReduction, name: str, leaf_backend="jax"
+        self, dp: DiagramProcessing, sed: SemiExplicitDAE, name: str, leaf_backend="jax"
     ):
         super().__init__(name=name)
         self.dp = dp
-        self.ir = ir
+        self.sed = sed
 
         # Input Ports
         self._configure_inputs(dp.diagram.input_syms)
@@ -61,21 +65,40 @@ class AcausalSystem(LeafSystem):
         time = self.dp.eqn_env.t
         inputs = [s.s for s in self.dp.diagram.input_syms]
         params = [s.s for s in self.dp.params.keys()]
-        self.n_ode = len(self.ir.se_x)
-        self.n_alg = len(self.ir.se_y)
-        lambda_args = (time, self.ir.se_x, self.ir.se_y, *inputs, *params)
+        self.n_ode = sed.n_ode
+        self.n_alg = sed.n_alg
+        sym_args = (time, sed.x, sed.y, *inputs, *params)
 
         # Continuous State
-        self._configure_continuous_state(lambda_args, leaf_backend)
+        self._configure_continuous_state(sym_args, leaf_backend)
 
         # Output Ports
-        self._configure_outputs(lambda_args, dp.outp_exprs, leaf_backend)
+        if sed.is_scaled:
+            outp_exprs = {
+                sym: expr.subs(sed.vars_to_scaled_vars)
+                for sym, expr in dp.outp_exprs.items()
+            }
+        else:
+            outp_exprs = dp.outp_exprs
+        self._configure_outputs(sym_args, outp_exprs, leaf_backend)
 
         # Zero Crossing
-        self._configure_zcs(lambda_args, dp.zcs, leaf_backend)
+        if sed.is_scaled:
+            zcs = {}
+            for idx, zc_tuple in dp.zcs.items():
+                zc_expr, direction, is_bool_expr = zc_tuple
+                zcs[idx] = (
+                    zc_expr.subs(sed.vars_to_scaled_vars),
+                    direction,
+                    is_bool_expr,
+                )
+        else:
+            zcs = dp.zcs
+
+        self._configure_zcs(sym_args, zcs, leaf_backend)
 
     def _configure_inputs(self, input_syms):
-        # this ensure that inports of the acasual_system are in the same order as
+        # this ensure that inports of the acausal_system are in the same order as
         # the 'inputs' portion of the lambdify args
         insym_to_portid = {}
         for sym in input_syms:
@@ -115,7 +138,7 @@ class AcausalSystem(LeafSystem):
     def _configure_continuous_state(self, sym_args, leaf_backend):
         sp_rhs = sp.lambdify(
             sym_args,
-            self.ir.se_x_dot_rhs + self.ir.se_alg_eqs,
+            self.sed.f + self.sed.g,
             modules=[leaf_backend, {"cnp": cnp}],
         )
         mass_matrix = np.concatenate((np.ones(self.n_ode), np.zeros(self.n_alg)))
@@ -154,7 +177,7 @@ class AcausalSystem(LeafSystem):
 
                 return _output_fun
 
-            # declaring acasual_system output ports in this order means that the ordering
+            # declaring acausal_system output ports in this order means that the ordering
             # 'source of truth' is self.model.output_syms which can be used to link
             # back to the acausal sensors causal port for diagram link src point remapping.
             for sym, outp_expr in outp_exprs.items():
@@ -207,12 +230,12 @@ class AcausalSystem(LeafSystem):
 
     def initialize_static_data(self, context):
         dp = self.dp
-        ir = self.ir
+        sed = self.sed
         try:
             u = self.collect_inputs(context)
             knowns_new = {}
             next_input_idx = 0
-            for known in ir.knowns:
+            for known in sed.knowns.keys():
                 sym = dp.syms_map[known]
                 if sym.kind == SymKind.inp:
                     # FIXME: we are relying on the fact that inputs are always
@@ -224,13 +247,21 @@ class AcausalSystem(LeafSystem):
                     knowns_new[known] = u[next_input_idx]
                     next_input_idx = next_input_idx + 1
 
-            ir.knowns.update(knowns_new)
+            knowns = sed.knowns.copy()
+            knowns.update(knowns_new)
 
-            ir.compute_initial_conditions()
-            # FIXME: Duplicated code here from IndexReduction
-            se_x_ic = [ir.X_ic_mapping[ir.dae_X_to_X_mapping[var]] for var in ir.se_x]
-            se_y_ic = [ir.X_ic_mapping[ir.dae_X_to_X_mapping[var]] for var in ir.se_y]
-            x0 = np.array(se_x_ic + se_y_ic, dtype=float)
+            X_ic_mapping = compute_initial_conditions(
+                sed.t, sed.eqs, sed.X, sed.ics, sed.ics_weak, knowns, verbose=True
+            )
+
+            x_ic = [X_ic_mapping[sed.dae_X_to_X_mapping[var]] for var in sed.x]
+            y_ic = [X_ic_mapping[sed.dae_X_to_X_mapping[var]] for var in sed.y]
+
+            if sed.is_scaled:
+                x_ic = [val / sed.Ss[idx] for idx, val in enumerate(x_ic)]
+                y_ic = [val / sed.Ss[idx + sed.n_ode] for idx, val in enumerate(y_ic)]
+
+            x0 = np.array(x_ic + y_ic, dtype=float)
 
             self._default_continuous_state = x0
             local_context = context[self.system_id].with_continuous_state(x0)
@@ -258,6 +289,7 @@ class AcausalCompiler:
         self,
         eqn_env: EqnEnv,
         diagram: AcausalDiagram,
+        scale: bool = False,
         verbose: bool = False,
     ):
         self.dp = DiagramProcessing(
@@ -266,7 +298,10 @@ class AcausalCompiler:
             verbose=verbose,
         )
         self.index_reduction_done = False
+        self.scale = scale
         self.verbose = verbose
+
+        build_recorder.create_acausal_compiler()
 
     def diagram_processing(self):
         self.dp()
@@ -277,12 +312,12 @@ class AcausalCompiler:
             dpd=self.dp.dpd,
             verbose=self.verbose,
         )
-        self.ir()
+        self.sed = self.ir(scale=self.scale)
         self.index_reduction_done = True
 
     def generate_acausal_system(
         self,
-        name="acasual_system",
+        name="acausal_system",
         leaf_backend="jax",
     ):
         """
@@ -295,10 +330,17 @@ class AcausalCompiler:
             # this is only to temporarily skip index reduction when testing from json.
             self.index_reduction()
 
-        return AcausalSystem(self.dp, self.ir, name, leaf_backend)
+        with build_recorder.paused():
+            system = AcausalSystem(self.dp, self.sed, name, leaf_backend)
+        build_recorder.compile_acausal_diagram(system)
+
+        return system
 
     # execute compilation
-    def __call__(self, name="acasual_system", leaf_backend="jax"):
+    def __call__(self, name="acausal_system", leaf_backend="jax", return_sed=False):
         self.diagram_processing()
         self.index_reduction()
-        return self.generate_acausal_system(name=name, leaf_backend=leaf_backend)
+        system = self.generate_acausal_system(name=name, leaf_backend=leaf_backend)
+        if return_sed:
+            return system, self.sed
+        return system

@@ -134,6 +134,15 @@ class SimulatorOptions:
     min_minor_step_size: float = None
     max_minor_step_size: float = None
 
+    # This is used to bound the number of "checkpoints" in the adjoint solver and
+    # is used only when autodiff is enabled.  Increasing this may improve the
+    # accuracy of the adjoint solver (especially over long integration times), but
+    # will also increase memory usage.  Whether or not the resulting adjoint solve
+    # is faster depends on the details of the problem, for instance on the number of
+    # major steps and the ODE solver tolerance.  This can also be set to None to
+    # disable checkpointing altogether.
+    max_checkpoints: int = 16
+
     # This option determines whether the simulator saves any data.  If the
     # simulation is initiated from `simulate` this will be set automatically
     # depending on whether `recorded_signals` is provided.  Hence, this
@@ -185,6 +194,7 @@ class SimulatorOptions:
             max_step_size=self.max_minor_step_size,
             method=self.ode_solver_method,
             enable_autodiff=self.enable_autodiff,
+            max_checkpoints=self.max_checkpoints,
         )
 
     def __repr__(self) -> str:

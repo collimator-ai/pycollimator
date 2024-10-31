@@ -62,8 +62,10 @@ import ast
 from collections import defaultdict
 import dataclasses
 import enum
+from functools import wraps
 from typing import Union, TYPE_CHECKING
 
+import jax
 from jax import Array
 from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
@@ -270,7 +272,7 @@ def _compute_list(tpl, is_tuple):
     return new_lst
 
 
-def _add_dependents(lst, param):
+def _add_dependents(lst: list | tuple, param):
     for val in lst:
         if isinstance(val, Parameter):
             ParameterCache.add_dependent(val, param)
@@ -285,6 +287,10 @@ def _str_to_expression(s: str) -> str:
 
 
 def _array_to_str(arr: Array | np.ndarray):
+    if isinstance(arr, jax.core.Tracer):
+        # in case this function is called inside JAX jit
+        return f"np.array(<unknown>, dshape={arr.shape} dtype=np.{arr.dtype})"
+
     if arr.ndim == 0:
         return str(arr.item())
 
@@ -307,6 +313,10 @@ def _array_to_str(arr: Array | np.ndarray):
 
 
 def _value_as_str(value) -> str:
+    # Return '' for None because we parse '' coming from the UI as None
+    if value is None:
+        return ""
+
     if isinstance(value, ArrayLikeTypes):
         if isinstance(value, (Array, np.ndarray)):
             return _array_to_str(value)
@@ -359,18 +369,21 @@ def _value_as_str(value) -> str:
     if isinstance(value, str):
         return _str_to_expression(value)
 
-    if value is None:
-        return ""
+    if isinstance(value, Parameter):
+        return str(value)
 
-    # FIXME special case for jaxlite should not be necessary
-    if not IS_JAXLITE or not isinstance(value, Parameter):
-        # if is a Pytree
-        try:
-            value, _ = ravel_pytree(value)
-            return _value_as_str(value)
-        except BaseException:
-            # Not a pytree
-            pass
+    if IS_JAXLITE:
+        # ravel_pytree is unlikely to fail with the mocked up version of JAX because it
+        # does not have proper support for actual jax types and pytrees.
+        return str(value)
+
+    try:
+        # Test if is a Pytree
+        value, _ = ravel_pytree(value)
+        return _value_as_str(value)
+    except BaseException:
+        # Not a pytree
+        pass
 
     return str(value)
 
@@ -416,6 +429,14 @@ class ParameterCache:
     @classmethod
     def get_dependents(cls, param: "Parameter"):
         return cls.__dependents__[param]
+
+    @classmethod
+    def print_dependents(cls, param: "Parameter", indent=0):
+        """Prints the dependents tree of a parameter"""
+        indent_str = "|" + "--" * indent if indent > 0 else ""
+        print(indent_str + repr(param))
+        for dependent in cls.__dependents__[param]:
+            cls.print_dependents(dependent, indent + 1)
 
     @classmethod
     def static_dependents(cls, param: "Parameter"):
@@ -498,6 +519,9 @@ class ParameterCache:
             t = _compute_list(param.value, is_tuple=False)
             return t
 
+        if isinstance(param.value, dict):
+            return {key: Parameter.unwrap(val) for key, val in param.value.items()}
+
         if isinstance(param.value, np.ndarray):
             vals = _resolve_array_param_value(param)
             return np.array(vals, dtype=param.value.dtype)
@@ -536,6 +560,9 @@ def _op(op: Ops, left, right):
 
 
 def _record_parameter_creation(parameter):
+    if not build_recorder.is_recording():
+        return
+
     args = {}
     for field_info in dataclasses.fields(parameter):
         field_name = field_info.name
@@ -572,15 +599,44 @@ class Parameter:
 
     def get(self):
         value = ParameterCache.get(self)
-        if self.as_array:
+        if self.as_array and not isinstance(value, Array):
             value = utils.make_array(value, self.dtype, self.shape)
         return value
 
     def set(self, value: Union["Parameter", ArrayLike, str, tuple]):
         ParameterCache.replace(self, value)
 
+    @property
     def static_dependents(self):
         return ParameterCache.static_dependents(self)
+
+    @property
+    def is_dirty(self):
+        return ParameterCache.__is_dirty__[self]
+
+    @classmethod
+    def unwrap(cls, value):
+        """Get the underlying value of raw arrays and Parameter objects alike."""
+        if value is None:
+            return None
+        if isinstance(value, (Array, bool, int, float, complex)):
+            return value
+        if isinstance(value, (np.ndarray, np.number)):
+            if np.issubdtype(value.dtype, np.number):
+                return value
+            if value.shape == ():
+                return Parameter.unwrap(value.item())
+            return Parameter(value).get()
+        if isinstance(value, Parameter):
+            return value.get()
+        if isinstance(value, list):
+            return [cls.unwrap(val) for val in value]
+        if isinstance(value, tuple):
+            return tuple(cls.unwrap(val) for val in value)
+        if isinstance(value, dict):
+            return {key: cls.unwrap(val) for key, val in value.items()}
+        # Fallback for unhandled types: forward to __compute__
+        return Parameter(value).get()
 
     def __post_init__(self):
         ParameterCache.__dependents__[self] = set()
@@ -755,6 +811,20 @@ class Parameter:
             f"value_type={type(self.value).__name__}, "
             f"is_static={self.is_static}, "
             f"is_python_expr={self.is_python_expr}, "
-            f"id={self.__hash__()}"
+            f"id={self.__hash__()}, "
+            f"system={self.system.name if self.system is not None else None})"
             ")"
         )
+
+
+def with_resolved_parameters(func):
+    """Function wrapper to resolve Parameters from all arguments"""
+
+    @wraps(func)
+    def func_with_resolved_parameters(*args, **kwargs):
+        args = [Parameter.unwrap(arg) for arg in args]
+        kwargs = {k: Parameter.unwrap(v) for k, v in kwargs.items()}
+        result = func(*args, **kwargs)
+        return result
+
+    return func_with_resolved_parameters

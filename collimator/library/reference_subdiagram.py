@@ -106,7 +106,7 @@ class ReferenceSubdiagram:
         constructor: ReferenceSubdiagramProtocol,
         # FIXME: rename parameter_definitions to default_parameters
         parameter_definitions: list[Parameter] = None,  # noqa: F821
-        ref_id: str = None,
+        ref_id: str | None = None,
     ) -> str:
         if ref_id is None:
             ref_id = str(uuid4())

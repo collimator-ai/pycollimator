@@ -67,7 +67,7 @@ class BatteryCell(LeafSystem):
         B: float
         C: float
 
-    @parameters(dynamic=["E0", "K", "Q", "R", "tau", "A", "B", "initial_SOC"])
+    @parameters(dynamic=["E0", "K", "Q", "R", "tau", "A", "B"], static=["initial_SOC"])
     def __init__(
         self,
         E0: float = 3.366,

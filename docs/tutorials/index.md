@@ -7,6 +7,8 @@ What the library does,
 
 #### [Creating custom blocks](./02-creating-custom-blocks.ipynb)
 
-#### [Wrappers and decorators](./03-wrappers.ipynb)
+#### [Creating custom acausal components](./03-creating-custom-acausal-components.ipynb)
 
-#### [Automatic differentiation and optimization](./04-automatic-differentiation-optimization.ipynb)
+#### [Wrappers and decorators](./04-wrappers.ipynb)
+
+#### [Automatic differentiation and optimization](./05-automatic-differentiation-optimization.ipynb)

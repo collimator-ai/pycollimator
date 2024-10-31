@@ -16,6 +16,8 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 
+from collimator.framework.parameter import with_resolved_parameters
+
 from ...framework import parameters
 from .utils import prepare_continuous_plant_for_nonlinear_kalman_filter
 
@@ -109,10 +111,11 @@ class UnscentedKalmanFilter(KalmanFilterBase):
         alpha=1.0,
         beta=0.0,
         kappa=0.0,
+        is_feedthrough=True,  # TODO: determine automatically?
         name=None,
         **kwargs,
     ):
-        super().__init__(dt, x_hat_0, P_hat_0, name, **kwargs)
+        super().__init__(dt, x_hat_0, P_hat_0, is_feedthrough, name, **kwargs)
 
     def initialize(
         self,
@@ -259,6 +262,7 @@ class UnscentedKalmanFilter(KalmanFilterBase):
     #######################################
 
     @staticmethod
+    @with_resolved_parameters
     def for_continuous_plant(
         plant,
         dt,
@@ -423,6 +427,7 @@ class UnscentedKalmanFilter(KalmanFilterBase):
     ###################################################################################
 
     @staticmethod
+    @with_resolved_parameters
     def from_operators(
         dt,
         forward,

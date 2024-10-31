@@ -156,7 +156,7 @@ class Trainer:
             )
 
         if key is None:
-            key = jax.random.PRNGKey(np.random.randint(0, 2**32))
+            key = jax.random.PRNGKey(np.random.randint(0, 2**32, dtype=np.int64))
 
         # Create a function to evaluate the forward pass through the simulation
         forward = self.make_forward(sim_start_time, sim_stop_time)

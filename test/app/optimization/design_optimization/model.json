@@ -1017,11 +1017,11 @@
     "sim_output_mode": "auto",
     "solver": {
       "absolute_tolerance": 0.000001,
-      "max_minor_steps_per_major_step": 4096,
       "max_step": 1000000,
       "method": "non-stiff",
       "min_step": 0,
-      "relative_tolerance": 0.001
+      "relative_tolerance": 0.001,
+      "max_checkpoints": 16
     },
     "start_time": 0,
     "stop_time": 2,

@@ -10,16 +10,15 @@
 # Affero General Public License along with this program. If not, see
 # <https://www.gnu.org/licenses/>.
 
-import jax.numpy as jnp
-
+from ..backend import numpy_api as cnp
 from ..framework import LeafSystem
 from .primitives import FeedthroughBlock
 
 __all__ = ["ode_block", "feedthrough_block"]
 
 
-def ode_block(state_dim, dtype=jnp.float64, num_inputs=0, name=None):
-    template_vector = jnp.zeros(state_dim, dtype=dtype)
+def ode_block(state_dim, dtype=cnp.float64, num_inputs=0, name=None):
+    template_vector = cnp.zeros(state_dim, dtype=dtype)
 
     def _wrapper(func):
         block_name = name if name is not None else func.__name__
